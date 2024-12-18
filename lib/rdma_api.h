@@ -19,7 +19,7 @@
 /*! \def RQE_SIZE
     \brief Number of an RQ entry.
 
-    Size RQ entry is aligned with 256B. Setting RQE_SIZE 512 indicates each RQE entry has 
+    Size RQ entry is aligned with 256B. Setting RQE_SIZE 512 indicates each RQE entry has
     512*256 = 128KB
 */
 #define RQE_SIZE 512
@@ -28,25 +28,25 @@
     \brief Structure used to store RDMA global control status registers.
 */
 struct rdma_glb_csr_t {
-  uint32_t data_buf_size;     /*!< data_buf_size data buffer size. 
+  uint32_t data_buf_size;     /*!< data_buf_size data buffer size.
                                    [15:0] Number of data buffers;
                                    [31:16 Data buffer size in bytes. */
   uint64_t data_buf_baseaddr; /*!< data_buf_baseaddr base address of a data buffer. */
 
-  uint16_t ipkt_err_stat_q_size; /*!< ipkt_err_stat_q_size Incoming packet 
-                                      error status queue size. 
+  uint16_t ipkt_err_stat_q_size; /*!< ipkt_err_stat_q_size Incoming packet
+                                      error status queue size.
                                       [15:0] Number of incoming error packet status
                                              queue entries;
                                       [31:16 Reserved. */
-  uint64_t ipkt_err_stat_q_baseaddr; /*!< ipkt_err_stat_q_baseaddr Base address of 
+  uint64_t ipkt_err_stat_q_baseaddr; /*!< ipkt_err_stat_q_baseaddr Base address of
                                           incoming packet error status queue. Used to
                                           store fatal code of an incoming error packet. */
   uint64_t err_buf_baseaddr;  /*!< err_buf_baseaddr base address of an error buffer. */
-  uint32_t err_buf_size;      /*!< err_buf_size error buffer size. 
+  uint32_t err_buf_size;      /*!< err_buf_size error buffer size.
                                    [15:0] Number of error buffers;
                                    [31:16 Size of each error buffer in bytes. */
   uint64_t resp_err_pkt_buf_baseaddr; /*!< resp_err_pkt_buf_baseaddr base address of a response error packet buffer. */
-  uint64_t resp_err_pkt_buf_size; /*!< resp_err_pkt_buf_size response error packet buffer size. */
+  uint64_t resp_err_pkt_buf_size; /*!< resp_err_pkt_buf_size response error packet buffer size. [15:0] Number of entries; [31:16] size of each entry */
   uint32_t interrupt_enable; /*!< interrupt_enable interrupt configuration. */
   struct mac_addr_t src_mac; /*!< src_mac source MAC address. */
   uint32_t src_ip;           /*!< src_ip source IP address. */
@@ -54,6 +54,7 @@ struct rdma_glb_csr_t {
   uint8_t  num_qp_enabled;   /*!< num_qp_enabled Number of RDMA QP enabled. */
   uint32_t xrnic_conf;     /*!< xrnic_config ERNIC global configuration. */
   uint32_t xrnic_advanced_conf; /*!< xrnic_advanced_conf ERNIC advanced global configuration. */
+  uint32_t xrnic_conf_qp_en; /*!< xrnic_conf_qp_en Number of QPs to be enabled. */
 };
 
 /*! \struct rdma_dev_t
@@ -81,7 +82,7 @@ struct rdma_pd_t {
   uint32_t r_key; /*!< r_key 8-bit security key used in RDMA packets. */
   uint32_t buffer_size_lsb; /*!< buffer_size_lsb size (LSB) of the allocated buffer. */
   uint16_t buffer_size_msb; /*!< buffer_size_msb size (MSB) of the allocated buffer. */
-  uint16_t pd_access_type; /*!< pd_access_type Buffer access type. 
+  uint16_t pd_access_type; /*!< pd_access_type Buffer access type.
                                 4-bit pd_access_type:
                                 -- 4'b0000: READ Only
                                 -- 4'b0001: Write Only
@@ -128,7 +129,7 @@ struct rdma_wqe_t {
   uint32_t laddr_low;  /*!< laddr_low local payload buffer adress (LSB). */
   uint32_t laddr_high; /*!< laddr_high local payload buffer adress (MSB). */
   uint32_t length;     /*!< length payload size for the transfer. */
-  uint32_t opcode;     /*!< opcode 8-bit Opcode, only opcode[7:0] is valid, 
+  uint32_t opcode;     /*!< opcode 8-bit Opcode, only opcode[7:0] is valid,
                             the rest opcode[31:8] should be set to 0. */
   uint32_t remote_offset_low;   /*!< remote_offset_low remote memory address offset (LSB). */
   uint32_t remote_offset_high;  /*!< remote_offset_low remote memory address offset (MSB). */
@@ -162,7 +163,7 @@ struct rdma_dev_t* create_rdma_dev(struct rn_dev_t* rn_dev);
  *                           In the event of retransmission, the retried data is pulled
  *                           from these buffers
  *  @param ipkt_err_stat_q_size Incoming packet error status queue size (16-bit).
- *  @param ipkt_err_stat_q_baseaddr Base address of incoming packet error status queue. 
+ *  @param ipkt_err_stat_q_baseaddr Base address of incoming packet error status queue.
  *                                  Used to store fatal code of an incoming error packet.
  *  @param num_err_buf Number of error buffers.
  *  @param per_err_buf_size size of each error buffer in bytes
@@ -173,11 +174,11 @@ struct rdma_dev_t* create_rdma_dev(struct rn_dev_t* rn_dev);
  *                                   The retried addresses are pulled from these buffers
  *  @return void.
  */
-void open_rdma_dev(struct rdma_dev_t* rdma_dev, struct mac_addr_t local_mac, uint32_t local_ip, 
-                   uint32_t udp_sport, uint16_t num_data_buf, uint16_t per_data_buf_size, 
-                   uint64_t data_buf_baseaddr, uint16_t ipkt_err_stat_q_size, 
-                   uint64_t ipkt_err_stat_q_baseaddr, uint16_t num_err_buf, 
-                   uint16_t per_err_buf_size, uint64_t err_buf_baseaddr, 
+void open_rdma_dev(struct rdma_dev_t* rdma_dev, struct mac_addr_t local_mac, uint32_t local_ip,
+                   uint32_t udp_sport, uint16_t num_data_buf, uint16_t per_data_buf_size,
+                   uint64_t data_buf_baseaddr, uint16_t ipkt_err_stat_q_size,
+                   uint64_t ipkt_err_stat_q_baseaddr, uint16_t num_err_buf,
+                   uint16_t per_err_buf_size, uint64_t err_buf_baseaddr,
                    uint64_t resp_err_pkt_buf_size, uint64_t resp_err_pkt_buf_baseaddr);
 
 /** @brief Configure RDMA global control status registers.
@@ -200,7 +201,7 @@ struct rdma_pd_t* allocate_rdma_pd(struct rdma_dev_t* rdma_dev, uint32_t pd_num)
  *  @param rdma_buf the RDMA buffer to be registered.
  *  @return void.
  */
-void rdma_register_memory_region(struct rdma_dev_t* rdma_dev, struct rdma_pd_t* rdma_pd, 
+void rdma_register_memory_region(struct rdma_dev_t* rdma_dev, struct rdma_pd_t* rdma_pd,
                                  uint32_t r_key, struct rdma_buff_t* rdma_buf);
 
 /** @brief Allocate a host-side buffer.
@@ -233,7 +234,7 @@ void config_sq_psn(struct rdma_dev_t* rdma_dev, uint32_t qpid, uint32_t sq_psn);
  *  @param cq_cidb_addr Base address of the CQ consumer index doorbell.
  *  @param rq_cidb_addr Base address of the RQ consumer index doorbell.
  *  @param qdepth Queue depth used to allocate SQ, CQ and RQ. Each WQE has 64B,
- *                each CQE has 4B and each RQE has 256B. 
+ *                each CQE has 4B and each RQE has 256B.
  *                Total size of SQ is calculated by num_qp * depth * WQE
  *                Total size of CQ is calculated by num_qp * depth * CQE
  *                Total size of RQ is calculated by num_qp * depth * RQE
@@ -285,7 +286,7 @@ void create_a_wqe(struct rdma_dev_t* rdma_dev,
                   uint32_t send_small_payload3,
                   uint32_t immdt_data);
 
-/** @brief Poll CQ consumer index doorbell to check whether RDMA read/write is completed 
+/** @brief Poll CQ consumer index doorbell to check whether RDMA read/write is completed
  *         and get its value.
  *  @param rdma_dev A pointer to the RDMA device.
  *  @param qpid The target queue pair ID.

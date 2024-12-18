@@ -32,12 +32,12 @@ struct rdma_dev_t* create_rdma_dev(struct rn_dev_t* rn_dev) {
     return rdma_dev;
 }
 
-void open_rdma_dev(struct rdma_dev_t* rdma_dev, struct mac_addr_t local_mac, 
-                   uint32_t local_ip, uint32_t udp_sport, uint16_t num_data_buf, 
+void open_rdma_dev(struct rdma_dev_t* rdma_dev, struct mac_addr_t local_mac,
+                   uint32_t local_ip, uint32_t udp_sport, uint16_t num_data_buf,
                    uint16_t per_data_buf_size, uint64_t data_buf_baseaddr,
                    uint16_t ipkt_err_stat_q_size, uint64_t ipkt_err_stat_q_baseaddr,
-                   uint16_t num_err_buf, uint16_t per_err_buf_size, 
-                   uint64_t err_buf_baseaddr, uint64_t resp_err_pkt_buf_size, 
+                   uint16_t num_err_buf, uint16_t per_err_buf_size,
+                   uint64_t err_buf_baseaddr, uint64_t resp_err_pkt_buf_size,
                    uint64_t resp_err_pkt_buf_baseaddr) {
   uint32_t xrnic_conf;
   uint32_t xrnic_advanced_conf;
@@ -69,7 +69,7 @@ void open_rdma_dev(struct rdma_dev_t* rdma_dev, struct mac_addr_t local_mac,
   rdma_global_config->err_buf_baseaddr           = err_buf_baseaddr;
   rdma_global_config->resp_err_pkt_buf_size      = resp_err_pkt_buf_size;
   rdma_global_config->resp_err_pkt_buf_baseaddr  = resp_err_pkt_buf_baseaddr;
-  
+
   rdma_global_config->interrupt_enable = interrupt_enable;
   rdma_global_config->src_mac.mac_lsb  = local_mac.mac_lsb;
   rdma_global_config->src_mac.mac_msb  = local_mac.mac_msb;
@@ -78,19 +78,18 @@ void open_rdma_dev(struct rdma_dev_t* rdma_dev, struct mac_addr_t local_mac,
   rdma_global_config->num_qp_enabled   = rdma_dev->num_qp;
 
   // configure XRNIC control register
-  // -- [31:16]: UDP source port for out-going packets (4791-0x12b7 is used as UDP destination 
-  //             port) 
-  // -- [15:8] : number of QPs enabled, used 8 in simulation 
+  // -- [31:24]: reserved: set to 0
+  // -- [23:8] : UDP source port for out-going packets (4791-0x12b7 is used as UDP destination
+  //             port)
   // -- [7:6]  : reserved: set to 0
-  // -- [5]    : Error buffer enable: set to 0
-  // -- [4:3]  : TX ACK generation, use default option: 00 - ACK only generated on explicit 
+  // -- [5]    : Error buffer enable: set to 1
+  // -- [4:3]  : TX ACK generation, use default option: 00 - ACK only generated on explicit
   //             ACK request in the incoming packet or on timeout
   // -- [2:1]  : reserved
-  // -- [0]    : ERNIC enable  
+  // -- [0]    : ERNIC enable
   en_ernic = 1;
-  num_qp = (uint32_t) rdma_dev->num_qp;
   config_8bit = ((reserved1<<6) & 0x000000c0) | ((err_buf_en<<5) & 0x00000020) | ((tx_ack_gen<<3) & 0x00000018) | ((reserved2<<1) & 0x00000006) | (en_ernic & 0x00000001);
-  xrnic_conf = ((udp_sport<<16) & 0xffff0000) | ((num_qp<<8) & 0x0000ff00) | (config_8bit & 0x000000ff);
+  xrnic_conf = ((udp_sport<<8) & 0x00ffff00) | (config_8bit & 0x000000ff);
   rdma_global_config->xrnic_conf = xrnic_conf;
 
   // Configure XRNIC Advance configuration
@@ -108,15 +107,21 @@ void open_rdma_dev(struct rdma_dev_t* rdma_dev, struct mac_addr_t local_mac,
   // --          For 125 MHz clock --> Program decimal 09
   // --          For 100 MHz clock --> Program decimal 09
   // --          For N MHz clock ---> Value should be CLOG2(4.096 *N)
-  // -- [20:23]: Reserved
-  // -- [31:24]: Software Override QP Number
+  // -- [30:20]: Software Override QP NumberReserved
+  // -- [31]   : Reserved
   sw_override_enable  = 0;
   retry_cnt_fatal_dis = 1;
   base_count_width    = 10;
   sw_override_qp_num  = 0;
   config_16bit = 0x0000000f & ( (sw_override_enable & 0x00000001) | ((retry_cnt_fatal_dis<<2) & 0x00000004) );
-  xrnic_advanced_conf = config_16bit | ((base_count_width << 16) & 0x000f0000) | ( (sw_override_qp_num << 24) & 0xff000000);
+  xrnic_advanced_conf = config_16bit | ((base_count_width << 16) & 0x000f0000) | ( (sw_override_qp_num << 20) & 0x7ff00000);
   rdma_global_config->xrnic_advanced_conf = xrnic_advanced_conf;
+
+  // Configure number of active QPs (XRNIC_CONF_QP_EN)
+  // -- [31:11] : reserved, set to 0
+  // -- [10: 0] : number of QPs enabled
+  num_qp = ((uint32_t) rdma_dev->num_qp) & 0x000003ff;
+  rdma_global_config->xrnic_conf_qp_en = num_qp;
 
   config_rdma_global_csr(rdma_dev);
   fprintf(stderr, "Info: rdma_dev opened\n");
@@ -132,8 +137,8 @@ void config_rdma_global_csr (struct rdma_dev_t* rdma_dev) {
   uint32_t err_buf_baseaddr_msb;
   uint32_t resp_err_pkt_buf_baseaddr_lsb;
   uint32_t resp_err_pkt_buf_baseaddr_msb;
-  uint32_t resp_err_pkt_buf_size_lsb;
-  uint32_t resp_err_pkt_buf_size_msb;
+  uint32_t resp_err_pkt_buf_size;
+  uint32_t resp_err_pkt_buf_cur_ptr;
 
   struct rdma_glb_csr_t* global_csr = rdma_dev->glb_csr;
   uint32_t win_size_low  = rdma_dev->winSize->win_size_lsb;
@@ -179,8 +184,8 @@ void config_rdma_global_csr (struct rdma_dev_t* rdma_dev) {
     resp_err_pkt_buf_baseaddr_lsb = ((uint32_t) ((global_csr->resp_err_pkt_buf_baseaddr) & 0x00000000ffffffff)) & win_size_low;
     resp_err_pkt_buf_baseaddr_msb = ((uint32_t) ((global_csr->resp_err_pkt_buf_baseaddr >> 32) & 0x00000000ffffffff)) & win_size_high;
   }
-  resp_err_pkt_buf_size_lsb = ((uint32_t) ((global_csr->resp_err_pkt_buf_size) & 0x00000000ffffffff));;
-  resp_err_pkt_buf_size_msb = ((uint32_t) ((global_csr->resp_err_pkt_buf_size >> 32) & 0x00000000ffffffff));;
+  resp_err_pkt_buf_size = ((uint32_t) ((global_csr->resp_err_pkt_buf_size) & 0x00000000ffffffff));
+  resp_err_pkt_buf_cur_ptr = 0;
 
   write32_data(rdma_dev->axil_ctl, RN_RDMA_GCSR_DATBUFBA, data_buf_baseaddr_lsb);
   Debug("[Register] RN_RDMA_GCSR_DATBUFBA=0x%x, value=0x%x\n", RN_RDMA_GCSR_DATBUFBA, data_buf_baseaddr_lsb);
@@ -207,10 +212,12 @@ void config_rdma_global_csr (struct rdma_dev_t* rdma_dev) {
   Debug("[Register] RN_RDMA_GCSR_RESPERRPKTBA=0x%x, value=0x%x\n", RN_RDMA_GCSR_RESPERRPKTBA, resp_err_pkt_buf_baseaddr_lsb);
   write32_data(rdma_dev->axil_ctl, RN_RDMA_GCSR_RESPERRPKTBAMSB, resp_err_pkt_buf_baseaddr_msb);
   Debug("[Register] RN_RDMA_GCSR_RESPERRPKTBAMSB=0x%x, value=0x%x\n", RN_RDMA_GCSR_RESPERRPKTBAMSB, resp_err_pkt_buf_baseaddr_msb);
-  write32_data(rdma_dev->axil_ctl, RN_RDMA_GCSR_RESPERRSZ, resp_err_pkt_buf_size_lsb);
-  Debug("[Register] RN_RDMA_GCSR_RESPERRSZ=0x%x, value=0x%x\n", RN_RDMA_GCSR_RESPERRSZ, resp_err_pkt_buf_size_lsb);
-  write32_data(rdma_dev->axil_ctl, RN_RDMA_GCSR_RESPERRSZMSB, resp_err_pkt_buf_size_msb);
-  Debug("[Register] RN_RDMA_GCSR_RESPERRSZMSB=0x%x, value=0x%x\n", RN_RDMA_GCSR_RESPERRSZMSB, resp_err_pkt_buf_size_msb);
+  write32_data(rdma_dev->axil_ctl, RN_RDMA_GCSR_RESPERRSZ, resp_err_pkt_buf_size);
+  Debug("[Register] RN_RDMA_GCSR_RESPERRSZ=0x%x, value=0x%x\n", RN_RDMA_GCSR_RESPERRSZ, resp_err_pkt_buf_size);
+  write32_data(rdma_dev->axil_ctl, RN_RDMA_GCSR_RESPERRWRPTR, resp_err_pkt_buf_cur_ptr);
+  Debug("[Register] RN_RDMA_GCSR_RESPERRWRPTR=0x%x, value=0x%x\n", RN_RDMA_GCSR_RESPERRWRPTR, resp_err_pkt_buf_cur_ptr);
+  //write32_data(rdma_dev->axil_ctl, RN_RDMA_GCSR_RESPERRSZMSB, resp_err_pkt_buf_size_msb);
+  //Debug("[Register] RN_RDMA_GCSR_RESPERRSZMSB=0x%x, value=0x%x\n", RN_RDMA_GCSR_RESPERRSZMSB, resp_err_pkt_buf_size_msb);
 
   // configure interrupt - enable all interrupt except for CNP scheduling
   write32_data(rdma_dev->axil_ctl, RN_RDMA_GCSR_INTEN, global_csr->interrupt_enable);
@@ -231,6 +238,9 @@ void config_rdma_global_csr (struct rdma_dev_t* rdma_dev) {
 
   write32_data(rdma_dev->axil_ctl, RN_RDMA_GCSR_XRNICADCONF, global_csr->xrnic_advanced_conf);
   Debug("[Register] RN_RDMA_GCSR_XRNICADCONF=0x%x, value=0x%x\n", RN_RDMA_GCSR_XRNICADCONF, global_csr->xrnic_advanced_conf);
+
+  write32_data(rdma_dev->axil_ctl, RN_RDMA_GCSR_XRNIC_CONF_QP_EN, global_csr->xrnic_conf_qp_en);
+  Debug("[Register] RN_RDMA_GCSR_XRNIC_CONF_QP_EN=0x%x, value=0x%x\n", RN_RDMA_GCSR_XRNIC_CONF_QP_EN, global_csr->xrnic_conf_qp_en);
 
   fprintf(stderr, "Info: RDMA global control status registers are configured.\n");
 }
@@ -274,7 +284,7 @@ void rdma_register_memory_region(struct rdma_dev_t* rdma_dev, struct rdma_pd_t* 
   fprintf(stderr, "Info: rdma_register_memory_region - registering memory region\n");
   if(rdma_dev == NULL) {
     fprintf(stderr, "Error: rdma_dev is NULL\n");
-    exit(EXIT_FAILURE);    
+    exit(EXIT_FAILURE);
   }
 
   if(rdma_pd == NULL) {
@@ -342,7 +352,7 @@ struct rdma_buff_t* allocate_hugepages_buffer(uint32_t num_hugepages) {
   }
 
   rdma_buffer->buffer = mmap(NULL, num_hugepages * (1 << HUGE_PAGE_SHIFT),
-                             PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS | 
+                             PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS |
                              MAP_HUGETLB, -1, 0);
 
   if(rdma_buffer->buffer == NULL) {
@@ -362,27 +372,27 @@ struct rdma_buff_t* allocate_hugepages_buffer(uint32_t num_hugepages) {
 }
 
 void config_last_rq_psn(struct rdma_dev_t* rdma_dev, uint32_t qpid, uint32_t last_rq_psn)
-{              
+{
   uint32_t rq_opcode = 0x0000000a; // Just a random op-code to avoid opcode sequence error
   uint32_t rq_conf = ((rq_opcode<<24) & 0xff000000) | (last_rq_psn & 0x00ffffff);
 
-  write32_data(rdma_dev->axil_ctl, 
-              get_rdma_per_q_config_addr(RN_RDMA_QCSR_LSTRQREQi, qpid), 
+  write32_data(rdma_dev->axil_ctl,
+              get_rdma_per_q_config_addr(RN_RDMA_QCSR_LSTRQREQi, qpid),
               rq_conf);
-  fprintf(stderr, "[Register] RN_RDMA_QCSR_LSTRQREQi=0x%x, qpid=%d, value=0x%x\n", 
-                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_LSTRQREQi, qpid), 
-                    qpid, 
+  fprintf(stderr, "[Register] RN_RDMA_QCSR_LSTRQREQi=0x%x, qpid=%d, value=0x%x\n",
+                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_LSTRQREQi, qpid),
+                    qpid,
                     rq_conf);
   rdma_dev->qps_ptr[qpid]->last_rq_psn = last_rq_psn;
 }
 
 void config_sq_psn(struct rdma_dev_t* rdma_dev, uint32_t qpid, uint32_t sq_psn){
-  write32_data(rdma_dev->axil_ctl, 
-              get_rdma_per_q_config_addr(RN_RDMA_QCSR_SQPSNi, qpid), 
+  write32_data(rdma_dev->axil_ctl,
+              get_rdma_per_q_config_addr(RN_RDMA_QCSR_SQPSNi, qpid),
               sq_psn);
-  fprintf(stderr, "[Register] RN_RDMA_QCSR_SQPSNi=0x%x, qpid=%d, value=0x%x\n", 
-                  get_rdma_per_q_config_addr(RN_RDMA_QCSR_SQPSNi, qpid), 
-                  qpid, 
+  fprintf(stderr, "[Register] RN_RDMA_QCSR_SQPSNi=0x%x, qpid=%d, value=0x%x\n",
+                  get_rdma_per_q_config_addr(RN_RDMA_QCSR_SQPSNi, qpid),
+                  qpid,
                   sq_psn);
   rdma_dev->qps_ptr[qpid]->sq_psn = sq_psn;
 }
@@ -473,51 +483,51 @@ struct rdma_qp_t* allocate_rdma_qp(struct rdma_dev_t* rdma_dev,
     rq_cidb_addr_msb = ((uint32_t) ((rq_cidb_addr >> 32) & 0x00000000ffffffff)) & win_size_high;
   }
   qp->rq_cidb_addr = rq_cidb_addr;
-  
+
   qp->pd_entry = pd_entry;
-  
+
   qp->qdepth   = qdepth;
   qp->dst_mac = dst_mac;
   qp->dst_ip  = dst_ip;
   rdma_dev->qps_ptr[qpid] = qp;
 
   fprintf(stderr, "Info: queue pair setting is done! Configuring RDMA per-queu CSR registers\n");
-  Debug("DEBUG: rdma_dev->rn_dev->axil_ctl = 0x%lx, rdma_dev->axil_ctl = 0x%lx\n", 
-                  (uint64_t) rdma_dev->rn_dev->axil_ctl, 
+  Debug("DEBUG: rdma_dev->rn_dev->axil_ctl = 0x%lx, rdma_dev->axil_ctl = 0x%lx\n",
+                  (uint64_t) rdma_dev->rn_dev->axil_ctl,
                   (uint64_t) rdma_dev->axil_ctl);
 
   if(rdma_dev->axil_ctl == 0) {
-    fprintf(stderr, "Error: rdma_dev->axil_ctl=0x%lx is not valid!\n", 
+    fprintf(stderr, "Error: rdma_dev->axil_ctl=0x%lx is not valid!\n",
                     (uint64_t) rdma_dev->axil_ctl);
     exit(EXIT_FAILURE);
   }
 
   // Configure RDMA per-queue CSR registers
-  write32_data(rdma_dev->axil_ctl, 
-              get_rdma_per_q_config_addr(RN_RDMA_QCSR_IPDESADDR1i, qpid), 
+  write32_data(rdma_dev->axil_ctl,
+              get_rdma_per_q_config_addr(RN_RDMA_QCSR_IPDESADDR1i, qpid),
               dst_ip);
-  Debug("[Register] RN_RDMA_QCSR_IPDESADDR1i=0x%x, qpid=%d, value=0x%x\n", 
-                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_IPDESADDR1i, qpid),  
-                    qpid, 
+  Debug("[Register] RN_RDMA_QCSR_IPDESADDR1i=0x%x, qpid=%d, value=0x%x\n",
+                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_IPDESADDR1i, qpid),
+                    qpid,
                     dst_ip);
-  write32_data(rdma_dev->axil_ctl, 
-                get_rdma_per_q_config_addr(RN_RDMA_QCSR_MACDESADDLSBi, qpid), 
+  write32_data(rdma_dev->axil_ctl,
+                get_rdma_per_q_config_addr(RN_RDMA_QCSR_MACDESADDLSBi, qpid),
                 dst_mac->mac_lsb);
-  Debug("[Register] RN_RDMA_QCSR_MACDESADDLSBi=0x%x, qpid=%d, value=0x%x\n", 
-                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_MACDESADDLSBi, qpid), 
-                    qpid, 
+  Debug("[Register] RN_RDMA_QCSR_MACDESADDLSBi=0x%x, qpid=%d, value=0x%x\n",
+                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_MACDESADDLSBi, qpid),
+                    qpid,
                     dst_mac->mac_lsb);
-  write32_data(rdma_dev->axil_ctl, 
-              get_rdma_per_q_config_addr(RN_RDMA_QCSR_MACDESADDMSBi, qpid), 
+  write32_data(rdma_dev->axil_ctl,
+              get_rdma_per_q_config_addr(RN_RDMA_QCSR_MACDESADDMSBi, qpid),
               dst_mac->mac_msb);
-  Debug("[Register] RN_RDMA_QCSR_MACDESADDMSBi=0x%x, qpid=%d, value=0x%x\n", 
-                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_MACDESADDMSBi, qpid), 
-                    qpid, 
+  Debug("[Register] RN_RDMA_QCSR_MACDESADDMSBi=0x%x, qpid=%d, value=0x%x\n",
+                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_MACDESADDMSBi, qpid),
+                    qpid,
                     dst_mac->mac_msb);
-  
+
   // Mask the physical address of sq, rq and cq
-  Debug("DEBUG: win_size_high = 0x%x, win_size_low = 0x%x\n", 
-                  win_size_high, 
+  Debug("DEBUG: win_size_high = 0x%x, win_size_low = 0x%x\n",
+                  win_size_high,
                   win_size_low);
 
   if(is_device_address(qp->sq->dma_addr)) {
@@ -530,23 +540,23 @@ struct rdma_qp_t* allocate_rdma_qp(struct rdma_dev_t* rdma_dev,
     sq_addr_msb = ((uint32_t) ((qp->sq->dma_addr >> 32) & 0x00000000ffffffff)) & win_size_high;
   }
 
-  write32_data(rdma_dev->axil_ctl, 
-                get_rdma_per_q_config_addr(RN_RDMA_QCSR_SQBAi, qpid),  
+  write32_data(rdma_dev->axil_ctl,
+                get_rdma_per_q_config_addr(RN_RDMA_QCSR_SQBAi, qpid),
                 sq_addr_lsb);
-  Debug("[Register] RN_RDMA_QCSR_SQBAi=0x%x, qpid=%d, value=0x%x\n", 
-                  get_rdma_per_q_config_addr(RN_RDMA_QCSR_SQBAi, qpid), 
-                  qpid, 
+  Debug("[Register] RN_RDMA_QCSR_SQBAi=0x%x, qpid=%d, value=0x%x\n",
+                  get_rdma_per_q_config_addr(RN_RDMA_QCSR_SQBAi, qpid),
+                  qpid,
                   sq_addr_lsb);
-  write32_data(rdma_dev->axil_ctl, 
-                get_rdma_per_q_config_addr(RN_RDMA_QCSR_SQBAMSBi, qpid), 
+  write32_data(rdma_dev->axil_ctl,
+                get_rdma_per_q_config_addr(RN_RDMA_QCSR_SQBAMSBi, qpid),
                 sq_addr_msb);
-  Debug("[Register] RN_RDMA_QCSR_SQBAMSBi=0x%x, qpid=%d, value=0x%x\n", 
-                  get_rdma_per_q_config_addr(RN_RDMA_QCSR_SQBAMSBi, qpid), 
-                  qpid, 
+  Debug("[Register] RN_RDMA_QCSR_SQBAMSBi=0x%x, qpid=%d, value=0x%x\n",
+                  get_rdma_per_q_config_addr(RN_RDMA_QCSR_SQBAMSBi, qpid),
+                  qpid,
                   sq_addr_msb);
-  Debug("DEBUG: qp->sq->dma_addr = 0x%lx, sq_addr_msb = 0x%x, sq_addr_lsb = 0x%x\n", 
-                  qp->sq->dma_addr, 
-                  sq_addr_msb, 
+  Debug("DEBUG: qp->sq->dma_addr = 0x%lx, sq_addr_msb = 0x%x, sq_addr_lsb = 0x%x\n",
+                  qp->sq->dma_addr,
+                  sq_addr_msb,
                   sq_addr_lsb);
 
   if(is_device_address(qp->cq->dma_addr)) {
@@ -559,23 +569,23 @@ struct rdma_qp_t* allocate_rdma_qp(struct rdma_dev_t* rdma_dev,
     cq_addr_msb = ((uint32_t) ((qp->cq->dma_addr >> 32) & 0x00000000ffffffff)) & win_size_high;
   }
 
-  write32_data(rdma_dev->axil_ctl, 
-              get_rdma_per_q_config_addr(RN_RDMA_QCSR_CQBAi, qpid), 
+  write32_data(rdma_dev->axil_ctl,
+              get_rdma_per_q_config_addr(RN_RDMA_QCSR_CQBAi, qpid),
               cq_addr_lsb);
-  Debug("[Register] RN_RDMA_QCSR_CQBAi=0x%x, qpid=%d, value=0x%x\n", 
-                  get_rdma_per_q_config_addr(RN_RDMA_QCSR_CQBAi, qpid), 
-                  qpid, 
+  Debug("[Register] RN_RDMA_QCSR_CQBAi=0x%x, qpid=%d, value=0x%x\n",
+                  get_rdma_per_q_config_addr(RN_RDMA_QCSR_CQBAi, qpid),
+                  qpid,
                   cq_addr_lsb);
-  write32_data(rdma_dev->axil_ctl, 
-                get_rdma_per_q_config_addr(RN_RDMA_QCSR_CQBAMSBi, qpid), 
+  write32_data(rdma_dev->axil_ctl,
+                get_rdma_per_q_config_addr(RN_RDMA_QCSR_CQBAMSBi, qpid),
                 cq_addr_msb);
-  Debug("[Register] RN_RDMA_QCSR_CQBAMSBi=0x%x, qpid=%d, value=0x%x\n", 
-                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_CQBAMSBi, qpid), 
-                    qpid, 
+  Debug("[Register] RN_RDMA_QCSR_CQBAMSBi=0x%x, qpid=%d, value=0x%x\n",
+                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_CQBAMSBi, qpid),
+                    qpid,
                     cq_addr_msb);
-  Debug("DEBUG: qp->cq->dma_addr = 0x%lx, cq_addr_msb = 0x%x, cq_addr_lsb = 0x%x\n", 
-                  qp->cq->dma_addr, 
-                  cq_addr_msb, 
+  Debug("DEBUG: qp->cq->dma_addr = 0x%lx, cq_addr_msb = 0x%x, cq_addr_lsb = 0x%x\n",
+                  qp->cq->dma_addr,
+                  cq_addr_msb,
                   cq_addr_lsb);
 
   if(is_device_address(qp->rq->dma_addr)) {
@@ -588,104 +598,104 @@ struct rdma_qp_t* allocate_rdma_qp(struct rdma_dev_t* rdma_dev,
     rq_addr_msb = ((uint32_t) ((qp->rq->dma_addr >> 32) & 0x00000000ffffffff)) & win_size_high;
   }
 
-  write32_data(rdma_dev->axil_ctl, 
-                get_rdma_per_q_config_addr(RN_RDMA_QCSR_RQBAi, qpid), 
+  write32_data(rdma_dev->axil_ctl,
+                get_rdma_per_q_config_addr(RN_RDMA_QCSR_RQBAi, qpid),
                 rq_addr_lsb);
-  Debug("[Register] RN_RDMA_QCSR_RQBAi=0x%x, qpid=%d, value=0x%x\n", 
-                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_RQBAi, qpid), 
-                    qpid, 
+  Debug("[Register] RN_RDMA_QCSR_RQBAi=0x%x, qpid=%d, value=0x%x\n",
+                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_RQBAi, qpid),
+                    qpid,
                     rq_addr_lsb);
-  write32_data(rdma_dev->axil_ctl, 
-                get_rdma_per_q_config_addr(RN_RDMA_QCSR_RQBAMSBi, qpid), 
+  write32_data(rdma_dev->axil_ctl,
+                get_rdma_per_q_config_addr(RN_RDMA_QCSR_RQBAMSBi, qpid),
                 rq_addr_msb);
-  Debug("[Register] RN_RDMA_QCSR_RQBAMSBi=0x%x, qpid=%d, value=0x%x\n", 
-                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_RQBAMSBi, qpid), 
-                    qpid, 
+  Debug("[Register] RN_RDMA_QCSR_RQBAMSBi=0x%x, qpid=%d, value=0x%x\n",
+                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_RQBAMSBi, qpid),
+                    qpid,
                     rq_addr_msb);
   Debug("DEBUG: qp->rq->dma_addr = 0x%lx, rq_addr_msb = 0x%x, rq_addr_lsb = 0x%x\n",
-                    qp->rq->dma_addr, 
-                    rq_addr_msb, 
+                    qp->rq->dma_addr,
+                    rq_addr_msb,
                     rq_addr_lsb);
 
   // CQ DB address
-  write32_data(rdma_dev->axil_ctl, 
-              get_rdma_per_q_config_addr(RN_RDMA_QCSR_CQDBADDi, qpid), 
+  write32_data(rdma_dev->axil_ctl,
+              get_rdma_per_q_config_addr(RN_RDMA_QCSR_CQDBADDi, qpid),
               cq_cidb_addr_lsb);
-  Debug("[Register] RN_RDMA_QCSR_CQDBADDi=0x%x, qpid=%d, value=0x%x\n", 
-                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_CQDBADDi, qpid), 
-                    qpid, 
+  Debug("[Register] RN_RDMA_QCSR_CQDBADDi=0x%x, qpid=%d, value=0x%x\n",
+                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_CQDBADDi, qpid),
+                    qpid,
                     cq_cidb_addr_lsb);
-  write32_data(rdma_dev->axil_ctl, 
-                get_rdma_per_q_config_addr(RN_RDMA_QCSR_CQDBADDMSBi, qpid), 
+  write32_data(rdma_dev->axil_ctl,
+                get_rdma_per_q_config_addr(RN_RDMA_QCSR_CQDBADDMSBi, qpid),
                 cq_cidb_addr_msb);
-  Debug("[Register] RN_RDMA_QCSR_CQDBADDMSBi=0x%x, qpid=%d, value=0x%x\n", 
-                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_CQDBADDMSBi, qpid), 
-                    qpid, 
+  Debug("[Register] RN_RDMA_QCSR_CQDBADDMSBi=0x%x, qpid=%d, value=0x%x\n",
+                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_CQDBADDMSBi, qpid),
+                    qpid,
                     cq_cidb_addr_msb);
   Debug("DEBUG: cq_cidb_addr = 0x%lx\n", cq_cidb_addr);
 
   // RQ DB address
-  write32_data(rdma_dev->axil_ctl, 
-              get_rdma_per_q_config_addr(RN_RDMA_QCSR_RQWPTRDBADDi, qpid), 
+  write32_data(rdma_dev->axil_ctl,
+              get_rdma_per_q_config_addr(RN_RDMA_QCSR_RQWPTRDBADDi, qpid),
               rq_cidb_addr_lsb);
-  Debug("[Register] RN_RDMA_QCSR_RQWPTRDBADDi=0x%x, qpid=%d, value=0x%x\n", 
-                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_RQWPTRDBADDi, qpid), 
-                    qpid, 
+  Debug("[Register] RN_RDMA_QCSR_RQWPTRDBADDi=0x%x, qpid=%d, value=0x%x\n",
+                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_RQWPTRDBADDi, qpid),
+                    qpid,
                     rq_cidb_addr_lsb);
-  write32_data(rdma_dev->axil_ctl, 
-              get_rdma_per_q_config_addr(RN_RDMA_QCSR_RQWPTRDBADDMSBi, qpid), 
+  write32_data(rdma_dev->axil_ctl,
+              get_rdma_per_q_config_addr(RN_RDMA_QCSR_RQWPTRDBADDMSBi, qpid),
               rq_cidb_addr_msb);
-  Debug("[Register] RN_RDMA_QCSR_RQWPTRDBADDMSBi=0x%x, qpid=%d, value=0x%x\n", 
-                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_RQWPTRDBADDMSBi, qpid), 
-                    qpid, 
+  Debug("[Register] RN_RDMA_QCSR_RQWPTRDBADDMSBi=0x%x, qpid=%d, value=0x%x\n",
+                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_RQWPTRDBADDMSBi, qpid),
+                    qpid,
                     rq_cidb_addr_msb);
   Debug("DEBUG: rq_cidb_addr = 0x%lx\n", rq_cidb_addr);
-  
+
   // Destination QP configuration
-  write32_data(rdma_dev->axil_ctl, 
-              get_rdma_per_q_config_addr(RN_RDMA_QCSR_DESTQPCONFi, qpid), 
+  write32_data(rdma_dev->axil_ctl,
+              get_rdma_per_q_config_addr(RN_RDMA_QCSR_DESTQPCONFi, qpid),
               dst_qpid);
-  Debug("[Register] RN_RDMA_QCSR_DESTQPCONFi=0x%x, qpid=%d, value=0x%x\n", 
-                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_DESTQPCONFi, qpid), 
-                    qpid, 
+  Debug("[Register] RN_RDMA_QCSR_DESTQPCONFi=0x%x, qpid=%d, value=0x%x\n",
+                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_DESTQPCONFi, qpid),
+                    qpid,
                     dst_qpid);
 
   // Queue depth configuration
-  write32_data(rdma_dev->axil_ctl, 
-                get_rdma_per_q_config_addr(RN_RDMA_QCSR_QDEPTHi, qpid), 
+  write32_data(rdma_dev->axil_ctl,
+                get_rdma_per_q_config_addr(RN_RDMA_QCSR_QDEPTHi, qpid),
                 (qdepth | qdepth << 16));
-  Debug("[Register] RN_RDMA_QCSR_QDEPTHi=0x%x, qpid=%d, value=0x%x\n", 
-                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_QDEPTHi, qpid), 
-                    qpid, 
+  Debug("[Register] RN_RDMA_QCSR_QDEPTHi=0x%x, qpid=%d, value=0x%x\n",
+                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_QDEPTHi, qpid),
+                    qpid,
                     (qdepth | qdepth << 16));
 
   // Queue pair control configuration
-  // [0]: QP enable – Should be set to 1 for all active QPs. A disabled QP will not be 
+  // [0]: QP enable – Should be set to 1 for all active QPs. A disabled QP will not be
   //      able to receive or transmit packets.
-	// [2]: RQ interrupt enable – When enabled, allows the receive queue interrupt to be 
+	// [2]: RQ interrupt enable – When enabled, allows the receive queue interrupt to be
   //      generated for every new packet received on the receive queue
-	// [3]: CQ interrupt enable – When enabled, allows the completion queue interrupt to 
+	// [3]: CQ interrupt enable – When enabled, allows the completion queue interrupt to
   //      be generated for every send work queue entry completion
-	// [4]: HW Handshake disable – This bit when reset to 0 enables the HW handshake ports 
-  //      for doorbell exchange. If set, all doorbell values are exchanged through writes 
+	// [4]: HW Handshake disable – This bit when reset to 0 enables the HW handshake ports
+  //      for doorbell exchange. If set, all doorbell values are exchanged through writes
   //      through the AXI4 or AXI4-Lite interface.
-	// [5]: CQE write enable – This bit when set, enables completion queue entry writes. 
-  //      The writes are disabled when this bit is reset. CQE writes can be enabled to 
+	// [5]: CQE write enable – This bit when set, enables completion queue entry writes.
+  //      The writes are disabled when this bit is reset. CQE writes can be enabled to
   //      debug failed completions.
 	// [6]: QP under recovery. This bit need to be set in the fatal clearing process.
 	// [7]: QP configured for IPv4 or IPv6
 	//      0 - IPv4
 	//      1 - IPv6 - not supported in this simulation
 	// [10:8]: Path MTU
-  //      000 – 256B 
+  //      000 – 256B
   //      001 – 512B
   //      010 – 1024B
   //      011 – 2048B
   //      100 - 4096B (default)
   //      101 to 111 - Reserved
-  // [31:16]: RQ Buffer size (in multiple of 256B). This is the size of each buffer 
+  // [31:16]: RQ Buffer size (in multiple of 256B). This is the size of each buffer
   //          element in the request and not the size of the entire request.
-  
+
   en_qp = 1;
   //ip_proto = 0;
   mtu_config = 4;
@@ -693,59 +703,59 @@ struct rdma_qp_t* allocate_rdma_qp(struct rdma_dev_t* rdma_dev,
   //qp_config = (en_qp & 0x0000000f) | (0x20 & 0x000000f0) | ((mtu_config<<8) & 0x0000ff00) | ((rq_buffer_entry_size<<16) & 0xffff0000);
   // set QPCONFi[4] = 1 to disable HW handshake
   // enable QPCONFi[2] and QPCONFi[3]
-  qp_config = (en_qp & 0x00000001) | 
-                (0xc & 0x0000000c) | 
-                (0x30 & 0x000000f0) | 
-                ((mtu_config<<8) & 0x0000ff00) | 
+  qp_config = (en_qp & 0x00000001) |
+                (0xc & 0x0000000c) |
+                (0x30 & 0x000000f0) |
+                ((mtu_config<<8) & 0x0000ff00) |
                 ((rq_buffer_entry_size<<16) & 0xffff0000);
-  write32_data(rdma_dev->axil_ctl, 
-                get_rdma_per_q_config_addr(RN_RDMA_QCSR_QPCONFi, qpid), 
+  write32_data(rdma_dev->axil_ctl,
+                get_rdma_per_q_config_addr(RN_RDMA_QCSR_QPCONFi, qpid),
                 qp_config);
-  Debug("[Register] RN_RDMA_QCSR_QPCONFi=0x%x, qpid=%d, value=0x%x\n", 
-                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_QPCONFi, qpid), 
-                    qpid, 
+  Debug("[Register] RN_RDMA_QCSR_QPCONFi=0x%x, qpid=%d, value=0x%x\n",
+                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_QPCONFi, qpid),
+                    qpid,
                     qp_config);
 
   // Queue pair advanced control configuration
   traffic_class = 0;
   time_to_live  = 64;
-  qp_adv_conf = ((partion_key<<16) & 0xffff0000) | 
-                ((time_to_live<<8) & 0x0000ff00) | 
+  qp_adv_conf = ((partion_key<<16) & 0xffff0000) |
+                ((time_to_live<<8) & 0x0000ff00) |
                 (traffic_class & 0x000000ff);
-  write32_data(rdma_dev->axil_ctl, 
-                get_rdma_per_q_config_addr(RN_RDMA_QCSR_QPADVCONFi, qpid), 
+  write32_data(rdma_dev->axil_ctl,
+                get_rdma_per_q_config_addr(RN_RDMA_QCSR_QPADVCONFi, qpid),
                 qp_adv_conf);
-  Debug("[Register] RN_RDMA_QCSR_QPADVCONFi=0x%x, qpid=%d, value=0x%x\n", 
-                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_QPADVCONFi, qpid), 
-                    qpid, 
+  Debug("[Register] RN_RDMA_QCSR_QPADVCONFi=0x%x, qpid=%d, value=0x%x\n",
+                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_QPADVCONFi, qpid),
+                    qpid,
                     qp_adv_conf);
 
   // PD number configuration
-  write32_data(rdma_dev->axil_ctl, 
-                get_rdma_per_q_config_addr(RN_RDMA_QCSR_PDi, qpid), 
+  write32_data(rdma_dev->axil_ctl,
+                get_rdma_per_q_config_addr(RN_RDMA_QCSR_PDi, qpid),
                 pd_entry->pd_num);
-  Debug("[Register] RN_RDMA_QCSR_PDi=0x%x, qpid=%d, value=0x%x\n", 
-                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_PDi, qpid), 
-                    qpid, 
+  Debug("[Register] RN_RDMA_QCSR_PDi=0x%x, qpid=%d, value=0x%x\n",
+                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_PDi, qpid),
+                    qpid,
                     pd_entry->pd_num);
 
   fprintf(stderr, "Info: allocate_rdma_qp - Successfully allocated a rdma qp\n");
   return qp;
 }
 
-void create_a_wqe(struct rdma_dev_t* rdma_dev, 
-                  uint32_t qpid, 
-                  uint16_t wrid, 
-                  uint32_t wqe_idx, 
-                  uint64_t laddr, 
-                  uint32_t length, 
-                  uint32_t opcode, 
-                  uint64_t remote_offset, 
-                  uint32_t r_key, 
-                  uint32_t send_small_payload0, 
-                  uint32_t send_small_payload1, 
-                  uint32_t send_small_payload2, 
-                  uint32_t send_small_payload3, 
+void create_a_wqe(struct rdma_dev_t* rdma_dev,
+                  uint32_t qpid,
+                  uint16_t wrid,
+                  uint32_t wqe_idx,
+                  uint64_t laddr,
+                  uint32_t length,
+                  uint32_t opcode,
+                  uint64_t remote_offset,
+                  uint32_t r_key,
+                  uint32_t send_small_payload0,
+                  uint32_t send_small_payload1,
+                  uint32_t send_small_payload2,
+                  uint32_t send_small_payload3,
                   uint32_t immdt_data) {
 
   uint32_t high_addr;
@@ -769,12 +779,15 @@ void create_a_wqe(struct rdma_dev_t* rdma_dev,
   Debug("Info: WQE mem_buffer = 0x%lx, masked_mem_buffer = 0x%lx\n", laddr, masked_buf_addr);
 
   struct rdma_buff_t* sq = rdma_dev->qps_ptr[qpid]->sq;
+
   if(is_device_address(sq->dma_addr)) {
     // SQ is allocated at device memory
     wqe = (struct rdma_wqe_t* ) malloc(sizeof(struct rdma_wqe_t));
+    Debug("Debug: WQE SQ is allocated at device, address 0x%lx\n",sq->dma_addr);
   } else {
     // SQ is allocated at host memory
     wqe = &(((struct rdma_wqe_t*) sq->buffer)[wqe_idx]);
+    Debug("Debug: WQE SQ is allocated at host, address 0x%lx\n",sq->dma_addr);
   }
   memset(wqe, 0, sizeof(struct rdma_wqe_t));
 
@@ -833,7 +846,7 @@ int poll_rq_pidb(struct rdma_dev_t* rdma_dev, uint32_t qpid) {
       rq_pidb = read32_data(rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_STATRQPIDBi, qpid));
   }
 
-  qp->rq_pidb = rq_pidb;        
+  qp->rq_pidb = rq_pidb;
   return qp->rq_pidb;
 }
 
@@ -865,7 +878,7 @@ timeout_action:
 
 int rdma_post_send(struct rdma_dev_t* rdma_dev, uint32_t qpid) {
   if(rdma_dev == NULL) {
-    fprintf(stderr, "Error: rdma_dev is NULL\n");  
+    fprintf(stderr, "Error: rdma_dev is NULL\n");
     exit(EXIT_FAILURE);
   }
 
@@ -874,7 +887,7 @@ int rdma_post_send(struct rdma_dev_t* rdma_dev, uint32_t qpid) {
   // Increase send queue producer index doorbell
   Debug("DEBUG: Reading hardware SQPIi (0x%x) = 0x%x\n", get_rdma_per_q_config_addr(RN_RDMA_QCSR_SQPIi, qpid), read32_data(rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_SQPIi, qpid)));
   Debug("DEBUG: original qp->sq_pidb = 0x%x\n", qp->sq_pidb);
-  
+
   qp->sq_pidb++;
 
   // Update sq_pidb to hardware
@@ -896,7 +909,7 @@ int rdma_post_send(struct rdma_dev_t* rdma_dev, uint32_t qpid) {
 
 int rdma_post_batch_send(struct rdma_dev_t* rdma_dev, uint32_t qpid, uint32_t batch_size) {
   if(rdma_dev == NULL) {
-    fprintf(stderr, "Error: rdma_dev is NULL\n");  
+    fprintf(stderr, "Error: rdma_dev is NULL\n");
     exit(EXIT_FAILURE);
   }
 
@@ -905,7 +918,7 @@ int rdma_post_batch_send(struct rdma_dev_t* rdma_dev, uint32_t qpid, uint32_t ba
   // Increase send queue producer index doorbell
   Debug("DEBUG: Reading hardware SQPIi (0x%x) = 0x%x\n", get_rdma_per_q_config_addr(RN_RDMA_QCSR_SQPIi, qpid), read32_data(rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_SQPIi, qpid)));
   Debug("DEBUG: original qp->sq_pidb = 0x%x\n", qp->sq_pidb);
-  
+
   qp->sq_pidb += batch_size;
 
     if((qp->qdepth < batch_size) || ((qp->sq_pidb > qp->qdepth))) {
@@ -936,10 +949,10 @@ int rdma_post_batch_send(struct rdma_dev_t* rdma_dev, uint32_t qpid, uint32_t ba
 void write_rq_cidb(struct rdma_dev_t* rdma_dev, struct rdma_qp_t* qp, uint32_t db_val) {
   // Keeping note of what the cidb is at
   qp->rq_cidb = db_val;
-  
+
   // Writing to the card
   write32_data(rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_RQCIi, qp->qpid), db_val);
-  
+
   return;
 }
 
@@ -1000,11 +1013,11 @@ void rdma_qp_fatal_recovery(struct rdma_dev_t* rdma_dev, uint32_t qpid) {
 
   /* 1. Wait till SQ/OSQ are empty */
   while(1) {
-    rt_value = read32_data(rdma_dev->axil_ctl, 
+    rt_value = read32_data(rdma_dev->axil_ctl,
                            get_rdma_per_q_config_addr(RN_RDMA_QCSR_STATQPi, qpid));
-    // Debug("[Register] RN_RDMA_QCSR_STATQPi=0x%x, qpid=%d, value=0x%x\n", 
-    //                 get_rdma_per_q_config_addr(RN_RDMA_QCSR_STATQPi, qpid), 
-    //                 qpid, 
+    // Debug("[Register] RN_RDMA_QCSR_STATQPi=0x%x, qpid=%d, value=0x%x\n",
+    //                 get_rdma_per_q_config_addr(RN_RDMA_QCSR_STATQPi, qpid),
+    //                 qpid,
     //                 rt_value);
     if ((rt_value >> 9) & 0x3)
 			break;
@@ -1012,27 +1025,27 @@ void rdma_qp_fatal_recovery(struct rdma_dev_t* rdma_dev, uint32_t qpid) {
 
   /* 2. Check SQ PI == CQ Head */
   timeout_cnt = 0;
-  while(read32_data(rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_CQHEADi, qpid)) 
+  while(read32_data(rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_CQHEADi, qpid))
         != read32_data(rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_SQPIi, qpid))) {
     timeout_cnt += 1;
     if (timeout_cnt > 100000){
-      fprintf(stderr, "TIMEOUT: CQHEADi:0x%x and SQPIi:0x%x are different\n", 
+      fprintf(stderr, "TIMEOUT: CQHEADi:0x%x and SQPIi:0x%x are different\n",
                       read32_data(rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_CQHEADi, qpid)),
                       read32_data(rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_SQPIi, qpid)));
       exit(EXIT_FAILURE);
     }
   }
-  
+
   /* Disable the QP */
   rt_value = read32_data(rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_QPCONFi, qpid));
-  write32_data(rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_QPCONFi, qpid), 
+  write32_data(rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_QPCONFi, qpid),
               (rt_value & ~(BIT(0)))); // set bit [0] to 0
   rt_value = read32_data(rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_QPCONFi, qpid));
-  write32_data(rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_QPCONFi, qpid), 
+  write32_data(rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_QPCONFi, qpid),
               (rt_value | BIT(6))); // set bit [6] to 1
   rt_value = read32_data(rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_QPCONFi, qpid));
-  Debug("[Register] RN_RDMA_QCSR_QPCONFi=0x%x, qpid=%d, value=0x%x\n", 
-                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_QPCONFi, qpid), 
+  Debug("[Register] RN_RDMA_QCSR_QPCONFi=0x%x, qpid=%d, value=0x%x\n",
+                    get_rdma_per_q_config_addr(RN_RDMA_QCSR_QPCONFi, qpid),
                     qpid, rt_value);
 }
 
@@ -1069,12 +1082,12 @@ int destroy_rdma_qp(struct rdma_qp_t* qp) {
     rt_value = read32_data(qp->rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_QPCONFi, qp->qpid));
     write32_data(qp->rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_QPCONFi, qp->qpid),  (rt_value & 0xfffffffe));
 
-    // Reset RQWPTRDBADDi, SQPIi, CQHEADi, RQCIi, STATRQPIDBi, STATCURSQPTRi, SQPSNi, LSTRQREQi 
+    // Reset RQWPTRDBADDi, SQPIi, CQHEADi, RQCIi, STATRQPIDBi, STATCURSQPTRi, SQPSNi, LSTRQREQi
     // and STATMSNi by 0; Configure QP under recovery in QPCONFi[6]
     write32_data(qp->rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_RQWPTRDBADDi, qp->qpid), 0);
     write32_data(qp->rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_SQPIi, qp->qpid), 0);
     write32_data(qp->rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_CQHEADi, qp->qpid), 0);
-    
+
     write32_data(qp->rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_RQCIi, qp->qpid), 0);
     write32_data(qp->rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_STATRQPIDBi, qp->qpid), 0);
     write32_data(qp->rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_STATCURSQPTRi, qp->qpid), 0);
@@ -1082,29 +1095,29 @@ int destroy_rdma_qp(struct rdma_qp_t* qp) {
     write32_data(qp->rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_LSTRQREQi, qp->qpid), 0);
     write32_data(qp->rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_STATMSNi, qp->qpid), 0);
     rt_value = read32_data(qp->rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_QPCONFi, qp->qpid));
-    
+
     uint32_t test = read32_data(qp->rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_CQHEADi, qp->qpid));
     Debug("[DEBUG] Destroying dev: %p, RN_RDMA_QCSR_CQHEADi=0x%x, qpid=%d, value=0x%x\n", qp->rdma_dev->axil_ctl,
                             get_rdma_per_q_config_addr(RN_RDMA_QCSR_CQHEADi, qp->qpid), qp->qpid, test);
-    
+
     write32_data(qp->rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_QPCONFi, qp->qpid),  (rt_value | 0x00000040));
     test = read32_data(qp->rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_CQHEADi, qp->qpid));
     Debug("[DEBUG] Destroying dev: %p, RN_RDMA_QCSR_CQHEADi=0x%x, qpid=%d, value=0x%x\n", qp->rdma_dev->axil_ctl,
                             get_rdma_per_q_config_addr(RN_RDMA_QCSR_CQHEADi, qp->qpid), qp->qpid, test);
-    
+
     // Disable software override mode (1'b0) in XRNICADCONF[0]
     rt_value = read32_data(qp->rdma_dev->axil_ctl, RN_RDMA_GCSR_XRNICADCONF);
     write32_data(qp->rdma_dev->axil_ctl, RN_RDMA_GCSR_XRNICADCONF, (rt_value & 0xfffffffe));
-  
+
     test = read32_data(qp->rdma_dev->axil_ctl, get_rdma_per_q_config_addr(RN_RDMA_QCSR_CQHEADi, qp->qpid));
     Debug("[DEBUG] Destroying dev: %p, RN_RDMA_QCSR_CQHEADi=0x%x, qpid=%d, value=0x%x\n", qp->rdma_dev->axil_ctl,
                             get_rdma_per_q_config_addr(RN_RDMA_QCSR_CQHEADi, qp->qpid), qp->qpid, test);
-  
+
     // Free memory allocated for SQ, RQ and CQ
     free(qp->sq);
-    free(qp->rq); 
+    free(qp->rq);
     free(qp->cq);
-    
+
     destroy_rdma_pd_entry(qp->pd_entry);
     qp = NULL;
   }
@@ -1154,8 +1167,8 @@ void dump_registers(struct rdma_dev_t* rdma_dev, uint8_t is_sender, uint32_t qpi
   fprintf(stderr, "Info: [RN_RDMA_GCSR_LSTINPKT        = 0x%x] = 0x%x\n", RN_RDMA_GCSR_LSTINPKT       ,read32_data(rdma_dev->axil_ctl, RN_RDMA_GCSR_LSTINPKT));
   fprintf(stderr, "Info: [RN_RDMA_GCSR_LSTOUTPKT       = 0x%x] = 0x%x\n", RN_RDMA_GCSR_LSTOUTPKT      ,read32_data(rdma_dev->axil_ctl, RN_RDMA_GCSR_LSTOUTPKT));
   fprintf(stderr, "Info: [RN_RDMA_GCSR_ININVDUPCNT     = 0x%x] = 0x%x\n", RN_RDMA_GCSR_ININVDUPCNT    ,read32_data(rdma_dev->axil_ctl, RN_RDMA_GCSR_ININVDUPCNT));
-  fprintf(stderr, "Info: [RN_RDMA_GCSR_INNCKPKTSTS     = 0x%x] = 0x%x\n", RN_RDMA_GCSR_INNCKPKTSTS    ,read32_data(rdma_dev->axil_ctl, RN_RDMA_GCSR_INNCKPKTSTS));
-  fprintf(stderr, "Info: [RN_RDMA_GCSR_OUTRNRPKTSTS    = 0x%x] = 0x%x\n", RN_RDMA_GCSR_OUTRNRPKTSTS   ,read32_data(rdma_dev->axil_ctl, RN_RDMA_GCSR_OUTRNRPKTSTS));
+  //fprintf(stderr, "Info: [RN_RDMA_GCSR_INNCKPKTSTS     = 0x%x] = 0x%x\n", RN_RDMA_GCSR_INNCKPKTSTS    ,read32_data(rdma_dev->axil_ctl, RN_RDMA_GCSR_INNCKPKTSTS));
+  //fprintf(stderr, "Info: [RN_RDMA_GCSR_OUTRNRPKTSTS    = 0x%x] = 0x%x\n", RN_RDMA_GCSR_OUTRNRPKTSTS   ,read32_data(rdma_dev->axil_ctl, RN_RDMA_GCSR_OUTRNRPKTSTS));
   fprintf(stderr, "Info: [RN_RDMA_GCSR_WQEPROCSTS      = 0x%x] = 0x%x\n", RN_RDMA_GCSR_WQEPROCSTS     ,read32_data(rdma_dev->axil_ctl, RN_RDMA_GCSR_WQEPROCSTS));
   fprintf(stderr, "Info: [RN_RDMA_GCSR_QPMSTS          = 0x%x] = 0x%x\n", RN_RDMA_GCSR_QPMSTS         ,read32_data(rdma_dev->axil_ctl, RN_RDMA_GCSR_QPMSTS));
   fprintf(stderr, "Info: [RN_RDMA_GCSR_INALLDRPPKTCNT  = 0x%x] = 0x%x\n", RN_RDMA_GCSR_INALLDRPPKTCNT ,read32_data(rdma_dev->axil_ctl, RN_RDMA_GCSR_INALLDRPPKTCNT));
