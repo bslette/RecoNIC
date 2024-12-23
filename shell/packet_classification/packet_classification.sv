@@ -113,7 +113,7 @@ packet_parser pacekt_parser_inst (
   .user_metadata_out_valid (parser_out_metadata_valid),
 
     // Slave AXI-lite interface
-  .s_axi_awaddr            (s_axil_ctrl_awaddr[0]),
+  .s_axi_awaddr            (s_axil_ctrl_awaddr),
   .s_axi_awvalid           (s_axil_ctrl_awvalid),
   .s_axi_awready           (s_axil_ctrl_awready),
   .s_axi_wdata             (s_axil_ctrl_wdata),
@@ -123,7 +123,7 @@ packet_parser pacekt_parser_inst (
   .s_axi_bresp             (s_axil_ctrl_bresp),
   .s_axi_bvalid            (s_axil_ctrl_bvalid),
   .s_axi_bready            (s_axil_ctrl_bready),
-  .s_axi_araddr            (s_axil_ctrl_araddr[0]),
+  .s_axi_araddr            (s_axil_ctrl_araddr),
   .s_axi_arvalid           (s_axil_ctrl_arvalid),
   .s_axi_arready           (s_axil_ctrl_arready),
   .s_axi_rdata             (s_axil_ctrl_rdata),
