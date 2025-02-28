@@ -40,7 +40,7 @@ class pktGenClass:
     self.cl_golden_mem = []
     self.cl_golden_data = []
     self.cfg_name = cfg_name
-  
+
   def gen_dummy_pkt_str(self):
     """Generate dummy packet string
     Args:
@@ -55,20 +55,20 @@ class pktGenClass:
         dummy_pkt_str = dummy_pkt_str + 'd' + ' '
       else:
         dummy_pkt_str = dummy_pkt_str + 'd'
-    
+
     return dummy_pkt_str
 
   def create_matrix(self, matrix_size):
     """Create matrix
     Args:
-      matrix_size (int): matrix size 
+      matrix_size (int): matrix size
     Return:
       generated matrix
     """
     lst = [ [j+1 for j in range(matrix_size)] for i in range(matrix_size) ]
     matrix = np.array(lst)
     return matrix
-  
+
   def mat2list(self, matrix):
     """Convert a matrix to a list
     Args:
@@ -178,7 +178,7 @@ class pktGenClass:
       if (item == 'row_col_size'):
         a_row = config_dict[item]
         a_col = config_dict[item]
-        b_col = config_dict[item]                
+        b_col = config_dict[item]
       if (item == 'num_ctl_cmd'):
         num_ctl_cmd = config_dict[item]
 
@@ -241,7 +241,7 @@ class pktGenClass:
       pkt_str = header_str + '\n'
     for i in pkts:
       pkt_str = pkt_str + i + '\n'
-    
+
     if (mode == 'w'):
       with open(filename, 'w') as f:
         f.write(pkt_str)
@@ -266,16 +266,16 @@ class pktGenClass:
     for i in pkts:
       pkt_str = pkt_str + i + '\n'
     with open(filename, 'a') as f:
-      f.write(pkt_str)    
+      f.write(pkt_str)
 
 # RoCEv2 packet generation class
 class GenRoCEClass(pktGenClass):
   ## We leverage ernic to generate rdma packets at the moment and only generate controls for ernic
   ## and verify data in either system or device memory
-  def __init__(self, cfg_name, debug=False, debug_path=''):
+  def __init__(self, cfg_name, cm_name='', debug=False, debug_path=''):
     super().__init__(cfg_name, debug)
     self.debug_path       = debug_path
-    self.top_module       = '' 
+    self.top_module       = ''
     self.eth_dst_seed     = '10:20:30:40:50:60'
     self.eth_src_seed     = 'a0:b0:c0:d0:e0:f0'
     self.eth_dst_noise    = 'cd:ab:ef:be:ad:de'
@@ -288,6 +288,12 @@ class GenRoCEClass(pktGenClass):
     self.num_data_buffer  = 4
     self.non_roce_traffic = 0
     self.num_non_roce     = 0
+    self.has_cm           = 0
+    self.cm_filename      = cm_name
+    self.cm_raw_str_lst   = []
+    self.cm_packets       = []
+    self.cm_base_offset   = 0xb0000
+    self.cm_pkts_in_mem   = []
     self.noise_roce_en    = 0
     self.num_flow         = 1
     self.non_roce_pkts    = []
@@ -306,10 +312,11 @@ class GenRoCEClass(pktGenClass):
     self.destination_qpid = 2
     self.sq_depth         = 4
     self.rq_depth         = 4
+    self.num_wqe          = 1
     self.mtu_size         = 4096
     self.rq_buffer_size   = 2048
     # hex(4660) = 0x1234
-    self.partition_key    = 0x1234
+    self.partition_key    = 0xffff
     # hex(26505) = 0x6789
     self.r_key            = 0x01
     self.sq_psn           = 0
@@ -356,6 +363,9 @@ class GenRoCEClass(pktGenClass):
     # SQ doorbell value
     self.sq_pidb  = 0
     self.parse_json_config()
+    if (self.has_cm == 1):
+      self.destination_qpid = 1
+      self.gen_cm_packets()
     if (self.top_module == 'rn_tb_2rdma_top'):
       self.gen_rdma_configurations(has_remote_peer=True)
     else:
@@ -369,7 +379,7 @@ class GenRoCEClass(pktGenClass):
 
   #def get_num_pkts(self):
   #  self.num_pkts = self.num_flow * self.num_pkts_per_flow
-  #  #self.num_pkts = len(self.roce_pkts) 
+  #  #self.num_pkts = len(self.roce_pkts)
 
   def parse_json_config(self):
     """Parse configuration file in JSON format
@@ -381,21 +391,26 @@ class GenRoCEClass(pktGenClass):
         # payload_size in bytes: small fabric header only support {0, 4, 8}
         self.payload_size = config_dict[item]
         if (config_dict[item] == 0):
-          self.no_payload = 1        
+          self.no_payload = 1
       if (item == 'number_flow'):
-        self.num_flow = config_dict[item]          
+        self.num_flow = config_dict[item]
       #if (item == 'number_pkts_per_flow'):
       #  self.num_pkts_per_flow = config_dict[item]
       if (item == 'pkt_op'):
         # pkt_op: 'write' and 'read'
         self.pkt_op = config_dict[item]
+      if (item == 'has_cm'):
+        if (config_dict[item] == 'yes'):
+          self.has_cm = 1
+        else:
+          self.has_cm = 0
       if (item == 'non_roce_traffic'):
         if (config_dict[item] == 'yes'):
           self.non_roce_traffic = 1
         else:
           self.non_roce_traffic = 0
       if (item == 'num_non_roce'):
-        self.num_non_roce = config_dict[item]        
+        self.num_non_roce = config_dict[item]
       if (item == 'noise_roce_en'):
         if (config_dict[item] == 'yes'):
           self.noise_roce_en = 1
@@ -433,6 +448,8 @@ class GenRoCEClass(pktGenClass):
         self.sq_depth = config_dict[item]
       if (item == 'rq_depth'):
         self.rq_depth = config_dict[item]
+      if (item == 'num_wqe'):
+        self.num_wqe  = config_dict[item]
       if (item == 'mtu_size'):
         self.mtu_size = config_dict[item]
       if (item == 'rq_buffer_size'):
@@ -475,13 +492,13 @@ class GenRoCEClass(pktGenClass):
       num_pkts    : number of rdma packets
     Notes: data will start from 0 and end with num_pkts - 1 and its size is 64B each.
     """
-    ## AXI-BRAM on hardware has 512KB setup, where 256KB is reserved for memory regions (mr). 
-    # For each flow, it only has one memory region allocated and each mr has 32KB, which means 
+    ## AXI-BRAM on hardware has 512KB setup, where 256KB is reserved for memory regions (mr).
+    # For each flow, it only has one memory region allocated and each mr has 32KB, which means
     # that we can have up to 8 flows. This is just the current sim config generation constraint
     # for simplicity, instead of the hardware limitation.
     assert(self.num_flow <= 8), 'Please reduce number of flow (<= 8) or increase size of AXI-BRAM'
     logger.debug(f'num_flow = {self.num_flow}; num_pkts = {num_pkts}')
-    # Initialization payload for memory and actual payload in rdma packets are different. In 
+    # Initialization payload for memory and actual payload in rdma packets are different. In
     # the initialization phase, we always use 64B payload
     init_payload_size = 64
     logger.debug(f'Initialization payload size = {init_payload_size}B')
@@ -496,10 +513,12 @@ class GenRoCEClass(pktGenClass):
         dest_addr    = base_addr + j*(1<<addr_shift)
         tmp_str = format(dest_addr, '016x') + ' ' + format(payload_data, '016x') + ' ' + format(init_payload_size, '04x')
         self.rdma_init_sys_mem.append(tmp_str)
-    
+
     self.rdma_init_dev_mem = self.rdma_init_sys_mem
     self.rdma_init_sys_mem = self.rdma_init_sys_mem + self.rdma_wqe_list
+    self.rdma_init_sys_mem = self.rdma_init_sys_mem + self.cm_pkts_in_mem
 
+  '''
   def get_rdma_per_q_config_addr(self, reg_offset, qpid):
     """Get RDMA per-queue configuration address
     Args:
@@ -510,6 +529,18 @@ class GenRoCEClass(pktGenClass):
     """
     addr = reg_offset + 0x100 * (qpid-1)
     return addr
+  '''
+  # ERNIC 4.0 doesn't have qpid - 1
+  def get_rdma_per_q_config_addr(self, reg_offset, qpid):
+    """Get RDMA per-queue configuration address
+    Args:
+      reg_offset (hex) : register offset
+      qpid       (int) : queue pair ID
+    Returns:
+      addr       (int) : address offset
+    """
+    addr = reg_offset + 0x100 * qpid
+    return addr
 
   def get_rdma_pd_config_addr(self, reg_offset, pd_num):
     """Get RDMA protection domain table configuration address
@@ -518,7 +549,7 @@ class GenRoCEClass(pktGenClass):
       pd_num     (int) : protection domain number
     Returns:
       addr       (int) : address offset
-    """    
+    """
     addr = reg_offset + 0x100 * pd_num
     return addr
 
@@ -557,10 +588,10 @@ class GenRoCEClass(pktGenClass):
     # error buffer offset                       : 0x50000
     # response error buffer offset              : 0x60000
 
-    # Configure physical base address of incoming packet error status buffer. An error 
-    # status entry in the buffer is 64-bit and has the format {32-bit reserved, 16-bit 
-    # QP ID, 16-bit Fatal code}. For the detailed fatal code, please refer to ERNIC user 
-    # guide PG332, Page 18, for more details. 
+    # Configure physical base address of incoming packet error status buffer. An error
+    # status entry in the buffer is 64-bit and has the format {32-bit reserved, 16-bit
+    # QP ID, 16-bit Fatal code}. For the detailed fatal code, please refer to ERNIC user
+    # guide PG332, Page 18, for more details.
     #   IPKTERRQSZ[15:0]   RW - Number of incoming error pkt status queue entries;
     #   IPKTERRQSZ[31:16]  RW - reserved.
     #   IPKTERRQWPTR[15:0] RO - Write pointer doorbell for incoming error status queue.
@@ -592,8 +623,8 @@ class GenRoCEClass(pktGenClass):
     debug_str = debug_str + 'eh.DATBUFSZ: ' + config_str + '\n'
 
     # Configure physical base address of data buffer. The main memory in the simulation
-    # only has 512KB and we split it into two memory space, each with 256KB. 
-    # We reserve 64KB in the second memory space (0x40000 - 0x7ffff) for data buffer. 
+    # only has 512KB and we split it into two memory space, each with 256KB.
+    # We reserve 64KB in the second memory space (0x40000 - 0x7ffff) for data buffer.
     # Default address range for data buffer is set to 0x40000 (262144) - 0x4ffff (327679).
     data_buf_baseaddr = 0x40000
     config_str = format(eh.DATBUFBA, '08x') + ' ' + format(data_buf_baseaddr, '08x')
@@ -604,11 +635,11 @@ class GenRoCEClass(pktGenClass):
     rdma_gbl_config.append(config_str)
     debug_str = debug_str + 'eh.DATBUFBAMSB: ' + config_str + '\n'
 
-    # Configure physical base address of error buffer. The ERNIC IP updates these buffers 
-    # with incoming packets that fail validation. The writes to this buffer for all 
-    # validation errors are enabled by writing a 1 to XRNICCONF[5]. If this bit is 
-    # disabled, only packets that cause the QP to move to a FATAL state are written to 
-    # the error buffer. We allocate 64KB (0x10000) for this buffer, starting from 
+    # Configure physical base address of error buffer. The ERNIC IP updates these buffers
+    # with incoming packets that fail validation. The writes to this buffer for all
+    # validation errors are enabled by writing a 1 to XRNICCONF[5]. If this bit is
+    # disabled, only packets that cause the QP to move to a FATAL state are written to
+    # the error buffer. We allocate 64KB (0x10000) for this buffer, starting from
     # 0x50000 (327680) to 0x5ffff (393215).
     err_buf_baseaddr = 0x50000
     config_str = format(eh.ERRBUFBA, '08x') + ' ' + format(err_buf_baseaddr, '08x')
@@ -624,52 +655,58 @@ class GenRoCEClass(pktGenClass):
     rdma_gbl_config.append(config_str)
     debug_str = debug_str + 'eh.ERRBUFSZ: ' + config_str + '\n'
 
-    # Configure physical base address of response error packet buffer. It's used to save 
-    # all error response packet base address. The retried addresses are pulled from these 
+    # Configure physical base address of response error packet buffer. It's used to save
+    # all error response packet base address. The retried addresses are pulled from these
     # buffers. We accocate 64KB (0x10000) for this buffer, starting from 0x60000 (393216)
     # to 0x6ffff (458751)
     rsp_err_pkt_baseaddr = 0x60000
     config_str = format(eh.RESPERRPKTBA, '08x') + ' ' + format(rsp_err_pkt_baseaddr, '08x')
     rdma_gbl_config.append(config_str)
-    debug_str = debug_str + 'eh.RESPERRPKTBA: ' + config_str + '\n'    
+    debug_str = debug_str + 'eh.RESPERRPKTBA: ' + config_str + '\n'
     rsp_err_pkt_baseaddr_msb = 0
     config_str = format(eh.RESPERRPKTBAMSB, '08x') + ' ' + format(rsp_err_pkt_baseaddr_msb, '08x')
     rdma_gbl_config.append(config_str)
-    debug_str = debug_str + 'eh.RESPERRPKTBAMSB: ' + config_str + '\n'    
+    debug_str = debug_str + 'eh.RESPERRPKTBAMSB: ' + config_str + '\n'
     rsp_err_pkt_buf_sz = 0x10000
     config_str = format(eh.RESPERRSZ, '08x') + ' ' + format(rsp_err_pkt_buf_sz, '08x')
     rdma_gbl_config.append(config_str)
-    debug_str = debug_str + 'eh.RESPERRSZ: ' + config_str + '\n'    
+    debug_str = debug_str + 'eh.RESPERRSZ: ' + config_str + '\n'
     rsp_err_pkt_buf_sz_msb = 0
     config_str = format(eh.RESPERRSZMSB, '08x') + ' ' + format(rsp_err_pkt_buf_sz_msb, '08x')
     rdma_gbl_config.append(config_str)
-    debug_str = debug_str + 'eh.RESPERRSZMSB: ' + config_str + '\n'    
+    debug_str = debug_str + 'eh.RESPERRSZMSB: ' + config_str + '\n'
 
     # Configure interrupts. It's disabled by default
     config_str = format(eh.INTEN, '08x') + ' ' + format((en_intr & 0x000001ff), '08x')
     rdma_gbl_config.append(config_str)
-    debug_str = debug_str + 'eh.INTEN: ' + config_str + '\n' 
+    debug_str = debug_str + 'eh.INTEN: ' + config_str + '\n'
 
     # Configure local mac address
     config_str = format(eh.MACXADDLSB, '08x') + ' ' + format(src_mac_lsb, '08x')
     rdma_gbl_config.append(config_str)
-    debug_str = debug_str + 'eh.MACXADDLSB: ' + config_str + '\n' 
+    debug_str = debug_str + 'eh.MACXADDLSB: ' + config_str + '\n'
     config_str = format(eh.MACXADDMSB, '08x') + ' ' + format(src_mac_msb, '08x')
     rdma_gbl_config.append(config_str)
-    debug_str = debug_str + 'eh.MACXADDMSB: ' + config_str + '\n' 
+    debug_str = debug_str + 'eh.MACXADDMSB: ' + config_str + '\n'
 
     # Configure local IPv4 address
     config_str = format(eh.IPv4XADD, '08x') + ' ' + format(src_ip, '08x')
     rdma_gbl_config.append(config_str)
-    debug_str = debug_str + 'eh.IPv4XADD: ' + config_str + '\n' 
+    debug_str = debug_str + 'eh.IPv4XADD: ' + config_str + '\n'
+
+    # Configure active queue pairs
+
+    config_str = format(eh.XRNIC_CONF_QP_EN, '08x') + ' ' + format((num_qp & 0x000007ff), '08x')
+    rdma_gbl_config.append(config_str)
+    debug_str = debug_str + 'eh.XRNIC_CONF_QP_EN: ' + config_str + '\n'
 
     # Configure XRNICCONF register
-    # -- [31:16]: UDP source port for out-going packets (4791-0x12b7 is used as UDP destination 
-    #             port) 
-    # -- [15:8] : number of QPs enabled, used 8 in simulation 
+    # -- [31:16]: UDP source port for out-going packets (4791-0x12b7 is used as UDP destination
+    #             port)
+    # -- [15:8] : number of QPs enabled, used 8 in simulation
     # -- [7:6]  : reserved: set to 0
     # -- [5]    : Error buffer enable: set to 0
-    # -- [4:3]  : TX ACK generation, use default option: 00 - ACK only generated on explicit 
+    # -- [4:3]  : TX ACK generation, use default option: 00 - ACK only generated on explicit
     #             ACK request in the incoming packet or on timeout
     # -- [2:1]  : reserved
     # -- [0]    : ERNIC enable
@@ -679,7 +716,8 @@ class GenRoCEClass(pktGenClass):
     tx_ack_gen = 0
     en_ernic = 1
     config_8bit = ((reserved1<<6) & 0x000000c0) | ((err_buf_en<<5) & 0x00000020) | ((tx_ack_gen<<3) & 0x00000018) | ((reserved2<<1) & 0x00000006) | (en_ernic & 0x00000001)
-    xrnic_conf = ((udp_sport<<16) & 0xffff0000) | ((num_qp<<8) & 0x0000ff00) | (config_8bit & 0x000000ff)
+    #xrnic_conf = ((udp_sport<<16) & 0xffff0000) | ((num_qp<<8) & 0x0000ff00) | (config_8bit & 0x000000ff)
+    xrnic_conf = ((udp_sport<<8) & 0x00ffff00) | (config_8bit & 0x000000ff)
     config_str = format(eh.XRNICCONF, '08x') + ' ' + format(xrnic_conf, '08x')
     rdma_gbl_config.append(config_str)
     debug_str = debug_str + 'eh.XRNICCONF: ' + config_str + '\n'
@@ -705,7 +743,7 @@ class GenRoCEClass(pktGenClass):
     base_count_width    = 10
     sw_override_qp_num  = 0
     config_16bit = 0x0000000f & ( (sw_override_enable & 0x00000001) | ((retry_cnt_fatal_dis<<2) & 0x00000004) )
-    xrnic_advanced_conf = (config_16bit & 0x0000ffff) | ((base_count_width << 16) & 0x000f0000) | ( (sw_override_qp_num << 24) & 0xff000000)
+    xrnic_advanced_conf = (config_16bit & 0x0000ffff) | ((base_count_width << 16) & 0x000f0000) | ( (sw_override_qp_num << 20) & 0xfff00000)
     config_str = format(eh.XRNICADCONF, '08x') + ' ' + format(xrnic_advanced_conf, '08x')
     rdma_gbl_config.append(config_str)
     debug_str = debug_str + 'eh.XRNICADCONF: ' + config_str + '\n'
@@ -755,7 +793,7 @@ class GenRoCEClass(pktGenClass):
       self.rdma1_stat_reg_config.append(format(eh.CQINTSTS2     , '08x'))
       self.rdma1_stat_reg_config.append(format(eh.CQINTSTS3     , '08x'))
       self.rdma1_stat_reg_config.append(format(eh.CQINTSTS4     , '08x'))
-      self.rdma1_stat_reg_config.append(format(eh.CQINTSTS5     , '08x'))    
+      self.rdma1_stat_reg_config.append(format(eh.CQINTSTS5     , '08x'))
       self.rdma1_stat_reg_config.append(format(eh.CQINTSTS6     , '08x'))
       self.rdma1_stat_reg_config.append(format(eh.CQINTSTS7     , '08x'))
       self.rdma1_stat_reg_config.append(format(eh.CQINTSTS8     , '08x'))
@@ -794,7 +832,7 @@ class GenRoCEClass(pktGenClass):
       self.rdma1_debug_stat_reg_config.append('eh.CQINTSTS2       : ' + format(eh.CQINTSTS2     , '08x'))
       self.rdma1_debug_stat_reg_config.append('eh.CQINTSTS3       : ' + format(eh.CQINTSTS3     , '08x'))
       self.rdma1_debug_stat_reg_config.append('eh.CQINTSTS4       : ' + format(eh.CQINTSTS4     , '08x'))
-      self.rdma1_debug_stat_reg_config.append('eh.CQINTSTS5       : ' + format(eh.CQINTSTS5     , '08x'))    
+      self.rdma1_debug_stat_reg_config.append('eh.CQINTSTS5       : ' + format(eh.CQINTSTS5     , '08x'))
       self.rdma1_debug_stat_reg_config.append('eh.CQINTSTS6       : ' + format(eh.CQINTSTS6     , '08x'))
       self.rdma1_debug_stat_reg_config.append('eh.CQINTSTS7       : ' + format(eh.CQINTSTS7     , '08x'))
       self.rdma1_debug_stat_reg_config.append('eh.CQINTSTS8       : ' + format(eh.CQINTSTS8     , '08x'))
@@ -834,7 +872,7 @@ class GenRoCEClass(pktGenClass):
       self.rdma2_stat_reg_config.append(format(eh.CQINTSTS2     , '08x'))
       self.rdma2_stat_reg_config.append(format(eh.CQINTSTS3     , '08x'))
       self.rdma2_stat_reg_config.append(format(eh.CQINTSTS4     , '08x'))
-      self.rdma2_stat_reg_config.append(format(eh.CQINTSTS5     , '08x'))    
+      self.rdma2_stat_reg_config.append(format(eh.CQINTSTS5     , '08x'))
       self.rdma2_stat_reg_config.append(format(eh.CQINTSTS6     , '08x'))
       self.rdma2_stat_reg_config.append(format(eh.CQINTSTS7     , '08x'))
       self.rdma2_stat_reg_config.append(format(eh.CQINTSTS8     , '08x'))
@@ -873,11 +911,11 @@ class GenRoCEClass(pktGenClass):
       self.rdma2_debug_stat_reg_config.append('eh.CQINTSTS2       : ' + format(eh.CQINTSTS2     , '08x'))
       self.rdma2_debug_stat_reg_config.append('eh.CQINTSTS3       : ' + format(eh.CQINTSTS3     , '08x'))
       self.rdma2_debug_stat_reg_config.append('eh.CQINTSTS4       : ' + format(eh.CQINTSTS4     , '08x'))
-      self.rdma2_debug_stat_reg_config.append('eh.CQINTSTS5       : ' + format(eh.CQINTSTS5     , '08x'))    
+      self.rdma2_debug_stat_reg_config.append('eh.CQINTSTS5       : ' + format(eh.CQINTSTS5     , '08x'))
       self.rdma2_debug_stat_reg_config.append('eh.CQINTSTS6       : ' + format(eh.CQINTSTS6     , '08x'))
       self.rdma2_debug_stat_reg_config.append('eh.CQINTSTS7       : ' + format(eh.CQINTSTS7     , '08x'))
       self.rdma2_debug_stat_reg_config.append('eh.CQINTSTS8       : ' + format(eh.CQINTSTS8     , '08x'))
-      
+
     return rdma_gbl_config
     logger.info("RDMA global CSR configuration generation is done")
 
@@ -910,15 +948,22 @@ class GenRoCEClass(pktGenClass):
     #                 -- [8]: Interrupt enable for CNP scheduling
     en_intr = 0x00ff
     self.rdma_global_config = self.gen_rdma_global_csr_config(mac_src_lsb, mac_src_msb, ip_src, self.udp_sport, self.num_qp, dbuf_size=self.data_buffer_size, num_dbuf=self.num_data_buffer, en_intr=en_intr)
-    
+
     # TODO: Start here
     for i in range(self.num_flow):
-      # qpid starts from 2, while pd_num starts from 0
-      qpid = i+2
-      # we use the same dst_qpid with qpid
-      dst_qpid = i+2
+      if (self.has_cm == 1):
+        qpid = i+1
+        # we use the same dst_qpid with qpid
+        dst_qpid = i+1
+        part_key = self.partition_key
+      else:
+        # qpid starts from 2, while pd_num starts from 0
+        qpid = i+2
+        # we use the same dst_qpid with qpid
+        dst_qpid = i+2
+        part_key = self.partition_key + i
+
       pd_num = i
-      part_key = self.partition_key + i
       # r_key is 8-bit in ERNIC RDMA IP
       r_key    = (self.r_key + i) & 0x000000ff
       ip_dst = self.ip_dst_list[i]
@@ -971,7 +1016,14 @@ class GenRoCEClass(pktGenClass):
         opcode = 0x0c
 
       # Generate two send operations
-      self.gen_rdma_wqe(qpid, wrid, 0, payload_addr, payload_len, opcode, remote_offset, remote_key)
+      for j in range(self.num_wqe):
+        if (self.has_cm == 1):
+          cm_offset = self.cm_base_offset + j * 0x40
+          cm_length = len((self.cm_packets[j]).split(' '))
+          self.gen_rdma_wqe(qpid, wrid, j, cm_offset, cm_length, opcode, remote_offset, remote_key)
+        else:
+          self.gen_rdma_wqe(qpid, wrid, j, payload_addr, payload_len, opcode, remote_offset, remote_key)
+      #self.gen_rdma_wqe(qpid, wrid, 0, payload_addr, payload_len, opcode, remote_offset, remote_key)
       #self.gen_rdma_wqe(qpid, wrid, 1, payload_addr + 0x40, payload_len, opcode, remote_offset, remote_key)
 
       '''
@@ -1015,7 +1067,7 @@ class GenRoCEClass(pktGenClass):
         # testbench.
         rq_config_str = format(rq_cidb_offset, '08x') + ' ' + format(0xffffffff, '08x')
         self.rdma2_per_q_recv_config.append(rq_config_str)
-      
+
       if (self.debug_path != ''):
         debug_fname = pjoin(self.debug_path, f'debug_rdma_perq_csr_config_qpid_{qpid}.txt')
         helper_lst = []
@@ -1073,13 +1125,13 @@ class GenRoCEClass(pktGenClass):
     debug_str = debug_str + 'eh.MACDESADDMSBi: ' + config_str + '\n'
 
     # Configure receive queue (rq) buffer for the qpid-th QP
-    # [31:8]: receive queue buffer baseaddress is 256B aligned. 
+    # [31:8]: receive queue buffer baseaddress is 256B aligned.
     # 256B is equal to the receive queue buffer element size * depth of receive queue.
     # In the simulation, we set 0x70000 as the RQ buffer base address. Assume 8KB for each
     # SQ, RQ and CQ per flow. Maximum depth of SQ will be 128 (8KB/64)
     rq_buf_baseaddr_offset = self.get_rdma_per_q_config_addr(eh.RQBAi, qpid)
     # qpid starts from 2, 0x2000 = 8*1024, 8KB range
-    rq_buf_baseaddr = 0x70000 + (qpid-2)*0x2000
+    rq_buf_baseaddr = 0x70000 + (qpid-1)*0x2000
     self.qpid_rq_dict[qpid] = rq_buf_baseaddr
     config_str = format(rq_buf_baseaddr_offset, '08x') + ' ' + format(rq_buf_baseaddr, '08x')
     if(is_remote_peer):
@@ -1098,7 +1150,7 @@ class GenRoCEClass(pktGenClass):
     # Configure completion queue (cq) buffer for the qpid-th QP
     # In the simulation, we set 0x80000 as the CQ buffer base address
     cq_buf_baseaddr_offset = self.get_rdma_per_q_config_addr(eh.CQBAi, qpid)
-    cq_buf_baseaddr = 0x80000 + (qpid-2)*0x2000
+    cq_buf_baseaddr = 0x80000 + (qpid-1)*0x2000
     self.qpid_cq_dict[qpid] = cq_buf_baseaddr
     config_str = format(cq_buf_baseaddr_offset, '08x') + ' ' + format(cq_buf_baseaddr, '08x')
     if(is_remote_peer):
@@ -1118,7 +1170,7 @@ class GenRoCEClass(pktGenClass):
     # Configure send queue (sq) buffer for the qpid-th QP
     # In the simulation, we set 0x90000 as the SQ buffer base address
     sq_buf_baseaddr_offset = self.get_rdma_per_q_config_addr(eh.SQBAi, qpid)
-    sq_buf_baseaddr = 0x90000 + (qpid-2)*0x2000
+    sq_buf_baseaddr = 0x90000 + (qpid-1)*0x2000
     self.qpid_sq_dict[qpid] = sq_buf_baseaddr
     config_str = format(sq_buf_baseaddr_offset, '08x') + ' ' + format(sq_buf_baseaddr, '08x')
     if(is_remote_peer):
@@ -1136,12 +1188,12 @@ class GenRoCEClass(pktGenClass):
     debug_str = debug_str + 'eh.SQBAMSBi: ' + config_str + '\n'
 
     # Configure CQ door bell (DB) address for the qpid-th QP
-    # This register provides the address of the Completion Queue doorbell register. 
-    # Upon completion of a new SEND Work queue entry, the ERNIC IP updates the CQ 
+    # This register provides the address of the Completion Queue doorbell register.
+    # Upon completion of a new SEND Work queue entry, the ERNIC IP updates the CQ
     # doorbell values in the address pointed to by this register. Register space range
     # is from 0xa0000 to 0xa0fff
     cq_db_baseaddr_offset = self.get_rdma_per_q_config_addr(eh.CQDBADDi, qpid)
-    cq_db_baseaddr        = 0xa0000 + (qpid-2)*0x100
+    cq_db_baseaddr        = 0xa0000 + (qpid-1)*0x100
     self.qpid_cq_db_dict[qpid] = cq_db_baseaddr
     config_str = format(cq_db_baseaddr_offset, '08x') + ' ' + format(cq_db_baseaddr, '08x')
     if(is_remote_peer):
@@ -1159,12 +1211,12 @@ class GenRoCEClass(pktGenClass):
     debug_str = debug_str + 'eh.CQDBADDMSBi: ' + config_str + '\n'
 
     # Configure receive queue write pointer door bell for the qpid-th QP
-    # This register provides the address of the Receive Queue doorbell register. Upon 
-    # reception of a new incoming RDMA SEND packet, the ERNIC IP updates the RQ doorbell 
+    # This register provides the address of the Receive Queue doorbell register. Upon
+    # reception of a new incoming RDMA SEND packet, the ERNIC IP updates the RQ doorbell
     # values in the address pointed to by this register. Register space range is from
     # 0xa1000 to 0xa1fff
     rq_wptr_db_baseaddr_offset = self.get_rdma_per_q_config_addr(eh.RQWPTRDBADDi, qpid)
-    rq_wptr_db_baseaddr = 0xa1000 + (qpid-2)*0x100
+    rq_wptr_db_baseaddr = 0xa1000 + (qpid-1)*0x100
     self.rq_wptr_db_dict[qpid] = rq_wptr_db_baseaddr
     config_str = format(rq_wptr_db_baseaddr_offset, '08x') + ' ' + format(rq_wptr_db_baseaddr, '08x')
     if(is_remote_peer):
@@ -1174,8 +1226,8 @@ class GenRoCEClass(pktGenClass):
     debug_str = debug_str + 'eh.RQWPTRDBADDi: ' + config_str + '\n'
 
     # Configure destination QP configuration for the qpid-th QP
-    # This register is configured at connection time by the SW and provides the remote QPID 
-    # connected to this QP. All outgoing packets from this QP are sent with this QPID as 
+    # This register is configured at connection time by the SW and provides the remote QPID
+    # connected to this QP. All outgoing packets from this QP are sent with this QPID as
     # the destination QPID.
 		# [23:0]: Destination Connected QPID
     dst_qpid_offset = self.get_rdma_per_q_config_addr(eh.DESTQPCONFi, qpid)
@@ -1200,34 +1252,34 @@ class GenRoCEClass(pktGenClass):
     debug_str = debug_str + 'eh.QDEPTHi: ' + config_str + '\n'
 
     # Configure queue pair control for the qpid-th QP
-    # [0]: QP enable – Should be set to 1 for all active QPs. A disabled QP will not be 
+    # [0]: QP enable – Should be set to 1 for all active QPs. A disabled QP will not be
     #      able to receive or transmit packets.
-		# [2]: RQ interrupt enable – When enabled, allows the receive queue interrupt to be 
+		# [2]: RQ interrupt enable – When enabled, allows the receive queue interrupt to be
     #      generated for every new packet received on the receive queue
-		# [3]: CQ interrupt enable – When enabled, allows the completion queue interrupt to 
+		# [3]: CQ interrupt enable – When enabled, allows the completion queue interrupt to
     #      be generated for every send work queue entry completion
-		# [4]: HW Handshake disable – This bit when reset to 0 enables the HW handshake ports 
-    #      for doorbell exchange. If set, all doorbell values are exchanged through writes 
+		# [4]: HW Handshake disable – This bit when reset to 0 enables the HW handshake ports
+    #      for doorbell exchange. If set, all doorbell values are exchanged through writes
     #      through the AXI4 or AXI4-Lite interface.
-		# [5]: CQE write enable – This bit when set, enables completion queue entry writes. 
-    #      The writes are disabled when this bit is reset. CQE writes can be enabled to 
+		# [5]: CQE write enable – This bit when set, enables completion queue entry writes.
+    #      The writes are disabled when this bit is reset. CQE writes can be enabled to
     #      debug failed completions.
 		# [6]: QP under recovery. This bit need to be set in the fatal clearing process.
 		# [7]: QP configured for IPv4 or IPv6
 	  #      0 - IPv4
 	  #      1 - IPv6 - not supported in this simulation
 		# [10:8]: Path MTU
-    #      000 – 256B 
+    #      000 – 256B
     #      001 – 512B
     #      010 – 1024B
     #      011 – 2048B
     #      100 - 4096B (default)
     #      101 to 111 - Reserved
-    # [31:16]: RQ Buffer size (in multiple of 256B). This is the size of each 
-    #          element in the request and not the size of the entire request. 
+    # [31:16]: RQ Buffer size (in multiple of 256B). This is the size of each
+    #          element in the request and not the size of the entire request.
     #          For example, when RQ Buffer size is 1 and we have two send operations.
     #          The baseaddress of RQ is 0x10000. Payload of the 1st send will be written
-    #          into 0x10000, while payload of the 2nd send will be written into 
+    #          into 0x10000, while payload of the 2nd send will be written into
     #          (0x10000 + 1*256) = 0x10100
     mtu_list = [256, 512, 1024, 2048, 4096]
     assert(mtu_sz in mtu_list), "Please provide correct mtu size from [256, 512, 1024, 2048, 4096]"
@@ -1235,7 +1287,7 @@ class GenRoCEClass(pktGenClass):
     en_qp = 1
     ip_proto = 0
     qp_recovery = 0
-    qp_ctrl_16bit = ((mtu_config<<8) & 0x0000ff00) | ((ip_proto<<7) & 0x00000080) | ((qp_recovery<<6) & 0x00000040) | ((en_cqe_write<<5) & 0x00000020) | ((en_hw_handshake<<4) & 0x00000010) | ((en_cq_intr<<3) & 0x00000008) | ((en_rq_intr<<2) & 0x00000004) | (en_qp & 0x00000003)
+    qp_ctrl_16bit = ((mtu_config<<8) & 0x0000ff00) | ((ip_proto<<7) & 0x00000080) | ((qp_recovery<<6) & 0x00000040) | ((en_cqe_write<<5) & 0x00000020) | ((((~en_hw_handshake) & 0x1)<<4) & 0x00000010) | ((en_cq_intr<<3) & 0x00000008) | ((en_rq_intr<<2) & 0x00000004) | (en_qp & 0x00000003)
     qp_ctrl = ((rq_buf_sz<<16) & 0xffff0000) | (qp_ctrl_16bit & 0x0000ffff)
     qp_ctrl_offset = self.get_rdma_per_q_config_addr(eh.QPCONFi, qpid)
     config_str = format(qp_ctrl_offset, '08x') + ' ' + format(qp_ctrl, '08x')
@@ -1246,37 +1298,39 @@ class GenRoCEClass(pktGenClass):
     debug_str = debug_str + 'eh.QPCONFi: ' + config_str + '\n'
 
     # Configure 8-bit traffic class, 8-bit time to live and 16-bit partition key
-    traffic_class = 0
-    time_to_live  = 64
-    qp_adv_conf = ((part_key<<16) & 0xffff0000) | ((time_to_live<<8) & 0x0000ff00) | (traffic_class & 0x000000ff)
-    qp_adv_conf_baseaddr = self.get_rdma_per_q_config_addr(eh.QPADVCONFi, qpid)
-    config_str = format(qp_adv_conf_baseaddr, '08x') + ' ' + format(qp_adv_conf, '08x')
-    if(is_remote_peer):
-      self.rdma2_per_q_config.append(config_str)
-    else:
-      self.rdma_per_q_config.append(config_str)
-    debug_str = debug_str + 'eh.QPADVCONFi: ' + config_str + '\n'
+    if (self.has_cm != 1):
+      # Only generate QPADVCONFi and SQPSNi configuration for non-QP1
+      traffic_class = 0
+      time_to_live  = 64
+      qp_adv_conf = ((part_key<<16) & 0xffff0000) | ((time_to_live<<8) & 0x0000ff00) | (traffic_class & 0x000000ff)
+      qp_adv_conf_baseaddr = self.get_rdma_per_q_config_addr(eh.QPADVCONFi, qpid)
+      config_str = format(qp_adv_conf_baseaddr, '08x') + ' ' + format(qp_adv_conf, '08x')
+      if(is_remote_peer):
+        self.rdma2_per_q_config.append(config_str)
+      else:
+        self.rdma_per_q_config.append(config_str)
+      debug_str = debug_str + 'eh.QPADVCONFi: ' + config_str + '\n'
 
-    # Configure SQ packet sequenece number (PSN) for the qpid-th QP
-    # This register is initialized at connection time by the SW. After that the HW updates 
-    # it for every outgoing packet and should not be updated by the SW.﻿ This register does 
-    # not exist for QP1.
-    sq_psn_offset = self.get_rdma_per_q_config_addr(eh.SQPSNi, qpid)
-    config_str = format(sq_psn_offset, '08x') + ' ' + format((sq_psn & 0x00ffffff), '08x')
-    if(is_remote_peer):
-      self.rdma2_per_q_config.append(config_str) 
-    else:
-      self.rdma_per_q_config.append(config_str)
-    debug_str = debug_str + 'eh.SQPSNi: ' + config_str + '\n'
+      # Configure SQ packet sequenece number (PSN) for the qpid-th QP
+      # This register is initialized at connection time by the SW. After that the HW updates
+      # it for every outgoing packet and should not be updated by the SW.﻿ This register does
+      # not exist for QP1.
+      sq_psn_offset = self.get_rdma_per_q_config_addr(eh.SQPSNi, qpid)
+      config_str = format(sq_psn_offset, '08x') + ' ' + format((sq_psn & 0x00ffffff), '08x')
+      if(is_remote_peer):
+        self.rdma2_per_q_config.append(config_str)
+      else:
+        self.rdma_per_q_config.append(config_str)
+      debug_str = debug_str + 'eh.SQPSNi: ' + config_str + '\n'
 
-    # Also need to configure receive PSN
-    if(is_remote_peer):
-      recv_psn_offset = self.get_rdma_per_q_config_addr(eh.LSTRQREQi, qpid)
-      last_opcode = 0x0a
-      # The last RQ PSN must be the incoming SEND PSN - 1
-      config_str = format(recv_psn_offset, '08x') +  ' ' + format((((sq_psn-1) & 0x00ffffff) | ((last_opcode<<24) & 0xff000000)), '08x')
-      self.rdma2_per_q_config.append(config_str)
-      debug_str = debug_str + 'eh.LSTRQREQi: ' + config_str + '\n'
+      # Also need to configure receive PSN
+      if(is_remote_peer):
+        recv_psn_offset = self.get_rdma_per_q_config_addr(eh.LSTRQREQi, qpid)
+        last_opcode = 0x0a
+        # The last RQ PSN must be the incoming SEND PSN - 1
+        config_str = format(recv_psn_offset, '08x') +  ' ' + format((((sq_psn-1) & 0x00ffffff) | ((last_opcode<<24) & 0xff000000)), '08x')
+        self.rdma2_per_q_config.append(config_str)
+        debug_str = debug_str + 'eh.LSTRQREQi: ' + config_str + '\n'
 
     # Configure protection domain number for the qpid-th QP
     # This register is 24-bit and contains the PD number assigned to the QP.
@@ -1300,11 +1354,12 @@ class GenRoCEClass(pktGenClass):
     # Generate rdma2_stat_reg_config for simulation
     if(is_remote_peer):
       self.rdma1_stat_reg_config.append(format(self.get_rdma_per_q_config_addr(eh.CQHEADi        , qpid), '08x'))
-      self.rdma1_stat_reg_config.append(format(self.get_rdma_per_q_config_addr(eh.STATSSNi       , qpid), '08x'))
-      self.rdma1_stat_reg_config.append(format(self.get_rdma_per_q_config_addr(eh.STATMSNi       , qpid), '08x'))
+      if (self.has_cm != 1):
+        self.rdma1_stat_reg_config.append(format(self.get_rdma_per_q_config_addr(eh.STATSSNi       , qpid), '08x'))
+        self.rdma1_stat_reg_config.append(format(self.get_rdma_per_q_config_addr(eh.STATMSNi       , qpid), '08x'))
+        self.rdma1_stat_reg_config.append(format(self.get_rdma_per_q_config_addr(eh.STATRESPSNi    , qpid), '08x'))
       self.rdma1_stat_reg_config.append(format(self.get_rdma_per_q_config_addr(eh.STATQPi        , qpid), '08x'))
       self.rdma1_stat_reg_config.append(format(self.get_rdma_per_q_config_addr(eh.STATCURSQPTRi  , qpid), '08x'))
-      self.rdma1_stat_reg_config.append(format(self.get_rdma_per_q_config_addr(eh.STATRESPSNi    , qpid), '08x'))
       self.rdma1_stat_reg_config.append(format(self.get_rdma_per_q_config_addr(eh.STATRQBUFCAi   , qpid), '08x'))
       self.rdma1_stat_reg_config.append(format(self.get_rdma_per_q_config_addr(eh.STATRQBUFCAMSBi, qpid), '08x'))
       self.rdma1_stat_reg_config.append(format(self.get_rdma_per_q_config_addr(eh.STATWQEi       , qpid), '08x'))
@@ -1346,7 +1401,7 @@ class GenRoCEClass(pktGenClass):
     logger.info("RDMA per-queue CSR configuration generation is done")
 
   def gen_rdma_mr_per_pd_num(self, pd_num, buf_len, r_key, virt_addr, phy_addr):
-    """Generate configurations for RDMA per-pd_num memory region registration 
+    """Generate configurations for RDMA per-pd_num memory region registration
     Args:
       pd_num    (int): protection domain number, 0-255
       buf_len   (int): buffer length
@@ -1356,7 +1411,7 @@ class GenRoCEClass(pktGenClass):
       is_remote_peer (bool): a signal to indicate remote peer. Default value is False
     Returns:
       none
-    """  
+    """
     debug_str = ''
     # configure protection domain number
     assert(pd_num<256), "The system only supports pd_number <= 255"
@@ -1376,7 +1431,7 @@ class GenRoCEClass(pktGenClass):
     config_str = format(virtaddr_msb_offset, '08x') + ' ' + format(virtaddr_msb, '08x')
     self.rdma_mr_config.append(config_str)
     debug_str = debug_str + 'eh.VIRTADDRMSB: ' + config_str + '\n'
-    
+
     # configure physical (DMA) address of the buffer
     bufbaseaddr_lsb_offset = self.get_rdma_pd_config_addr(eh.BUFBASEADDRLSB, pd_num)
     bufbaseaddr_lsb        = phy_addr
@@ -1402,7 +1457,7 @@ class GenRoCEClass(pktGenClass):
     debug_str = debug_str + 'eh.WRRDBUFLEN: ' + config_str + '\n'
 
     # configure access description of the protection domain table
-    # -- 	[3:0] Access description of the protection domain, and 
+    # -- 	[3:0] Access description of the protection domain, and
 		#           > 4'b0000: READ Only
 		#           > 4'b0001: Write Only
 		#           > 4'b0010: Read and Write, default value
@@ -1443,7 +1498,7 @@ class GenRoCEClass(pktGenClass):
                              All other values are reserved.
       remote_offset (int): 64-bit remote address offset
       remote_key    (int): 32-bit r_key (remote key)
-      send_data     (int): 128-bit RDMA send data. If the data to be sent is less than or 
+      send_data     (int): 128-bit RDMA send data. If the data to be sent is less than or
                            equal to 16B, this field is used to represent the data
       immdt_data    (int): 32-bit immediate data to be sent in ImmDt header
     Returns:
@@ -1520,7 +1575,8 @@ class GenRoCEClass(pktGenClass):
     #  rq_config_str = format(rq_cidb_offset, '08x') + ' ' + format(0xffffffff, '08x')
     #  self.rdma2_per_q_recv_config.append(rq_config_str)
 
-    if(len(self.rdma2_global_config) != 0):
+    if((len(self.rdma2_global_config) != 0) and (self.sq_pidb == self.num_wqe)):
+      logger.info(f"self.sqpidb={self.sq_pidb} and self.num_wqe={self.num_wqe}")
       self.rdma1_stat_reg_config.append(format(self.get_rdma_per_q_config_addr(eh.SQPIi    , qpid), '08x'))
       self.rdma1_debug_stat_reg_config.append('eh.SQPIi           : ' + format(self.get_rdma_per_q_config_addr(eh.SQPIi, qpid), '08x'))
 
@@ -1565,6 +1621,120 @@ class GenRoCEClass(pktGenClass):
       pkt_str = self.convert_packet_string(pkt_str_tmp)
       self.non_roce_pkts.append(pkt_str)
 
+  def remove_space_in_a_string(self, raw_string):
+    """Remove all spaces in a string
+    Args:
+      raw_string (str): raw string input
+    Returns:
+      string: string without any space
+    """
+    strs = raw_string.split(' ')
+    str_no_space = reduce(lambda x,y: x+y, strs)
+    #logger.debug(f"original string: {raw_string}\nstr_no_space: {str_no_space}")
+    return str_no_space
+
+  def convert_raw_string_to_scapy_byte_string(self, hex_string):
+    """Convert hex byte string to a raw hexadecimal byte string
+    Args:
+      hex_string (str): a hex byte string like "000102"
+    Returns:
+      string: a raw hexadecimal byte string like "b'\x00\x01\x02", which
+              can be used by scapy
+    """
+    byte_string = bytes.fromhex(hex_string)
+    return byte_string
+
+  def get_cm_raw_strings(self, cm_filename):
+    """Copy cm packets to non_roce_pkts list
+    Args:
+      cm_filename (str): Location of a cm file
+    Returns:
+      none
+    """
+    with open(cm_filename, 'r') as file:
+      for line in file:
+        self.cm_raw_str_lst.append(line)
+
+  def convert_cm_pkt_to_sys_mem_entries(self, cm_pkts):
+    """Convert cm packets to entries in rdma_init_sys_mem, so that local RDMA can send its CM
+       packets to remote peer
+    Args:
+      cm_pkts (str list): CM packets
+    Returns:
+      none
+    """
+    for pkt in cm_pkts:
+      print("cm_packets:")
+      print(pkt)
+      splited_pkt = pkt.split(' ')
+      #print(splited_pkt)
+      pkt_in_64B_chunks = [splited_pkt[i:i + 64] for i in range(0, len(splited_pkt), 64)]
+      last_chunk = pkt_in_64B_chunks[-1]
+      if (len(last_chunk) < 64):
+        num_zeroes_to_pad = 64 - len(last_chunk)
+        last_set = last_chunk + ['00'] * num_zeroes_to_pad
+        pkt_in_64B_chunks[-1] = last_set
+
+      idx = 0
+      for chunk in pkt_in_64B_chunks:
+        #print("original chunk")
+        #print(chunk)
+        chunk.reverse()
+        #print("reversed chunk")
+        #print(chunk)
+        chunk_str = reduce(lambda x,y: x+y, chunk)
+        cm_mem_addr = self.cm_base_offset + idx * 0x40
+        chunk_str_in_mem = format(cm_mem_addr, '016x') + ' ' + chunk_str + ' ' + format(64, '04x')
+        #print(chunk_str)
+        #print(chunk_str_in_mem)
+        idx = idx+1
+        self.cm_pkts_in_mem.append(chunk_str_in_mem)
+
+  def gen_cm_packets(self):
+    """Get cm raw packet strings from a file, modify its src/dst addresses of MAC and IP
+       fields, and generate its packet strings
+    Returns:
+      none
+    """
+    # mac_src_str (str): MAC src address in the form of "0a:0b:0c:0d:0e:0f"
+    # mac_dst_str (str): MAC dst address in the form of "0a:0b:0c:0d:0e:0f"
+    # ip_src_str  (str): IP src address in the form of "192.100.51.1"
+    # ip_dst_str  (str): IP dst address in the form of "192.100.52.1"
+    # [NOTE] We only use ONE IP src and dst address pair here.
+    mac_src_str = self.eth_src_seed
+    mac_dst_str = self.eth_dst_seed
+    ip_src_str  = self.ip_src_seed
+    ip_dst_str  = self.ip_dst_seed
+
+    self.get_cm_raw_strings(self.cm_filename)
+    for tmp_str in self.cm_raw_str_lst:
+      raw_string = self.remove_space_in_a_string(tmp_str)
+      byte_string = self.convert_raw_string_to_scapy_byte_string(raw_string)
+      scapy_packet = Ether(byte_string)
+      #print("Original packet:")
+      #scapy_packet.show2()
+
+      # Modify its MAC src and dst addresses
+      scapy_packet[Ether].src = mac_src_str
+      scapy_packet[Ether].dst = mac_dst_str
+      # Modify its IP src and dst
+      scapy_packet[IP].src = ip_src_str
+      scapy_packet[IP].dst = ip_dst_str
+      # Modify its UDP source port
+      scapy_packet[UDP].sport = self.udp_sport
+      # Modify psn
+      #scapy_packet[BTH].psn = self.sq_psn
+      # Re-calculate IP checksum
+      del scapy_packet[IP].chksum
+      #print("New packet:")
+      #scapy_packet.show2()
+      raw_pkt = raw(scapy_packet)
+      pkt_str_tmp = str(raw_pkt.hex())
+      pkt_str = self.convert_packet_string(pkt_str_tmp)
+      self.cm_packets.append(pkt_str)
+
+    self.convert_cm_pkt_to_sys_mem_entries(self.cm_packets)
+
   def gen_noise_roce_packets(self, num_noise=16):
     """Generate roce noise packets
     Args:
@@ -1581,7 +1751,7 @@ class GenRoCEClass(pktGenClass):
       raw_pkt = raw(pkt)
       pkt_str_tmp = str(raw_pkt.hex())
       pkt_str = self.convert_packet_string(pkt_str_tmp)
-      self.roce_noise_pkts.append(pkt_str)    
+      self.roce_noise_pkts.append(pkt_str)
 
 class GenEthClass(pktGenClass):
   def __init__(self, cfg_name, debug=False):
@@ -1600,7 +1770,7 @@ class GenEthClass(pktGenClass):
     self.twoTuple_hexs_dict = OrderedDict()
     self.rxm_pkt_obj_dict = OrderedDict()
     self.rxm_pkt_hex_dict = OrderedDict()
-    
+
     self.parse_json_config()
     self.pkts_generation_rxm()
 

@@ -27,6 +27,7 @@ table_name_gen  = 'weight_tb.tbl'
 
 rdma_sys_filename = 'rdma_sys_mem.txt'
 rdma_dev_filename = 'rdma_dev_mem.txt'
+rdma_cm_filename  = 'cm.txt'
 rdma_global_config_filename = 'rdma_global_config.txt'
 rdma_per_q_config_filename  = 'rdma_per_q_config.txt'
 rdma_mr_config_filename     = 'rdma_mr_config.txt'
@@ -115,6 +116,7 @@ class testcaseClass:
     logger.info('Testing directory: %s' % (tc_dir))
 
     config_file = glob.glob(pjoin(tc_dir, '*.json'))
+    cm_filepath = glob.glob(pjoin(tc_dir, rdma_cm_filename))
     if(len(config_file) == 0):
       logger.error('Please provide a configuration file in JSON format')
       exit()
@@ -123,12 +125,17 @@ class testcaseClass:
       exit()
     else:
       pass
-    
+
     # Top module name of testbenches, default is set to 'rn_tb_top'
     top_module = 'rn_tb_top'
     pkt_type = ''
     config_file = config_file[0]
     logger.info('config_file = %s' % config_file)
+    if(len(cm_filepath) == 1):
+      cm_filepath = cm_filepath[0]
+      logger.info('cm_filepath = %s' % cm_filepath)
+    else:
+      cm_filepath = ''
     with open(config_file, 'r') as f:
       config_dict = json.load(f)
 
@@ -157,24 +164,24 @@ class testcaseClass:
         logger.info('Generating traditional Ethernet packets')
         # Generate packets with the give configuration file
         pkt_gen = packet_gen.GenEthClass(config_file)
-        
+
         # Construct sending packets with mixed flows
         pc_pkt_fname = pjoin(tc_dir, packet_name_gen)
         logger.info('Constructing RxM PC packets')
-        num_pkts = self.construct_pc_packets(tc_name, pc_pkt_fname, pkt_gen) 
+        num_pkts = self.construct_pc_packets(tc_name, pc_pkt_fname, pkt_gen)
 
         # Create a metadata tuple as the input to SDNet generated files
         meta_tuple_fname = pjoin(tc_dir, tuple_name_gen)
         logger.debug('meta_tuple_fname = %s' % (meta_tuple_fname))
         self.gen_pc_metadata(meta_tuple_fname, num_pkts)
         logger.info('Packet data, metadata tuple and weight table content are ready')
-      
+
       if (self.skip_pktgen == 0 and self.is_roce == 1 and pkt_type == "rocev2"):
         logger.info('Constructing RDMA packets - Only support RoCEv2 protocol')
         if (is_debug):
-          pkt_gen = packet_gen.GenRoCEClass(config_file, debug=True, debug_path=tc_dir)
+          pkt_gen = packet_gen.GenRoCEClass(config_file, cm_filepath, debug=True, debug_path=tc_dir)
         else:
-          pkt_gen = packet_gen.GenRoCEClass(config_file)
+          pkt_gen = packet_gen.GenRoCEClass(config_file, cm_filepath)
 
         #mem_hdr_str = "% memory address; payload; size of payload in byte"
         mem_hdr_str = ""
@@ -227,9 +234,9 @@ class testcaseClass:
             pkt_gen.write2file(debug_wqe_fname, '', pkt_gen.debug_wqe_list)
 
         if (pkt_gen.non_roce_traffic == 1):
-          non_roce_hdr_string = f'% number of non-roce packets: {pkt_gen.num_non_roce};'
+          non_roce_hdr_string = f'% number of non-roce or cm packets: {len(pkt_gen.non_roce_pkts)};'
           pkt_gen.write_pkts2file(non_roce_packets_fname, non_roce_hdr_string, pkt_gen.non_roce_pkts)
-      
+
     # Start simulation
     if (self.skip_sim == 0):
       self.start_simulation(tc_name, self.sim_tool, sim_path, top_module, self.gui)
@@ -245,7 +252,7 @@ class testcaseClass:
       pc_pkt_fname (string) : file name to store the sending packets
       pkt_gen    (pktGenClass): an instance of the pktGenClass
     Returns:
-      total_flow_pkts_num            : number of actual packets inside 
+      total_flow_pkts_num            : number of actual packets inside
                                       the sending queue
     """
     total_pkt_header_size = 134
@@ -260,7 +267,7 @@ class testcaseClass:
       logger.error('Please increase pkt_size (packet size should be > %d) in configuration file' % total_pkt_header_size)
       exit()
 
-    # write to pc_pkt_fname  
+    # write to pc_pkt_fname
     logger.info('Writing packets into a file')
     # logger.debug('pkt_str = %s' % pkt_str)
     header_str = ''
@@ -294,7 +301,7 @@ class testcaseClass:
       top_module  (str) : name of top module in testbenches
       gui         (str) : on|off - simulator's gui mode
     Returns:
-      none      
+      none
     """
     logger.info(f'Simulating {top_module} with the {sim_tool} simulator')
     cur_dir = os.getcwd()
@@ -314,7 +321,7 @@ class testcaseClass:
       bit<8>  data_offs; -- point to payload (without headers)
       bit<32> tcp_seq; -- 0
       bit<8>  op; -- rxm_op_header.op
-      bit<32> tag; -- 0 
+      bit<32> tag; -- 0
     When generating xnic metadata, only configure the 'seq'
     field and set '0' to the rest.
 
@@ -366,7 +373,7 @@ def delete_elem_from_lst (target_lst, lst_pool):
   Args:
     target_lst (list) : a list with elements to be removed
     lst_pool   (list) : a list pool
-  Returns: 
+  Returns:
     none
   Note:
     Elements in target_lst must be also inside lst_pool
@@ -392,7 +399,7 @@ if __name__ == "__main__":
 
   if (argv_len < 3):
     print_help()
-    exit() 
+    exit()
 
   # Parse options
   idx_tc        = find_elem_in_lst('-tc', sys.argv)
@@ -419,7 +426,7 @@ if __name__ == "__main__":
     skip_pktgen = 1
   else:
     skip_pktgen = 0
-  
+
   if(idx_sim != -1):
     skip_sim = 1
   else:
