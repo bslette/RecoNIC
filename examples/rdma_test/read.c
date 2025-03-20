@@ -9,6 +9,7 @@
 #include "rdma_test.h"
 
 #define DEVICE_NAME_DEFAULT "/dev/reconic-mm"
+#define MAX_SOCKET_RETRY 1000
 
 uint8_t server;
 uint8_t client;
@@ -32,21 +33,22 @@ uint32_t win_size_low  = 0;
 // configure RDMA global control status register
 // data buffer, IPKTERR queue buffer, error buffer, response error buffer and retry packet buffer are allocated at host memory in the current software RDMA APIs.
 // We set default values to these buffers as below.
-// Data buffer size          : 16MB, 256 Data buffers with each having 4KB. Buffers of 4K size each for 
+// Data buffer size          : 16MB, 256 Data buffers with each having 4KB. Buffers of 4K size each for
 //                             256 QPs and each QP with up to 16 outstanding transactions.
-// IPKTERR buffer size       : 8KB for IPKTERR buffer. Each error status buffer entry is 64-bit wide. 
+// IPKTERR buffer size       : 8KB for IPKTERR buffer. Each error status buffer entry is 64-bit wide.
 //                             The format is [63: 32] reserved;
 //                                           [31 : 16] QP ID;
-//                                           [15 :  0] Fatal code. 
-// Error buffer size         : 64KB for error buffer. 256 packets of 256 bytes each. Packets that fail 
-//                             packet validation are sent to the error buffer along with 4 bytes of 
+//                                           [15 :  0] Fatal code.
+// Error buffer size         : 64KB for error buffer. 256 packets of 256 bytes each. Packets that fail
+//                             packet validation are sent to the error buffer along with 4 bytes of
 //                             error syndrome.
-// Response error buffer size: 64KB for response error buffer.
+// Response error buffer size: 64KB for response error buffer. 16 packets of 4K bytes each.
 uint16_t num_data_buf          = 4096;
 uint16_t per_data_buf_size     = 4096;
 uint16_t ipkt_err_stat_q_size  = 8192;
 uint16_t num_err_buf           = 256;
 uint16_t per_err_buf_size      = 256;
+uint64_t resp_err_pkt_buf_size_conf = ((4096 << 16) & 0xffff0000) | (16 & 0x0000ffff);
 uint64_t resp_err_pkt_buf_size = 65536;
 
 struct rn_dev_t* rn_dev;
@@ -76,7 +78,7 @@ int main(int argc, char *argv[])
   //payload size in bytes
   uint32_t payload_size = 4;
   int   pcie_resource_fd;
-  char  val = 0;
+  // char  val = 0;
 
   struct rdma_buff_t* cidb_buffer;
   struct rdma_buff_t* tmp_buffer;
@@ -207,24 +209,24 @@ int main(int argc, char *argv[])
 
   src_mac = get_mac_addr_from_str_ip(sockfd, src_ip_str);
 
-  /* 
+  /*
    * 1. Create an RecoNIC device instance
-   */  
+   */
   fprintf(stderr, "Info: Creating rn_dev\n");
   rn_dev = create_rn_dev(pcie_resource, &pcie_resource_fd, preallocated_hugepages, num_qp);
 
-  /* 
+  /*
    * 2. Create an RDMA device instance
    */
   fprintf(stderr, "Info: CREATE RDMA DEVICE\n");
   rdma_dev = create_rdma_dev(rn_dev);
 
-  /* 
-   * 3. Allocate memory for CQ and RQ's cidb buffers, data buffer, 
+  /*
+   * 3. Allocate memory for CQ and RQ's cidb buffers, data buffer,
    *    incoming_pkt_error_stat_q buffer, err_buffer and response error pkt buffer.
    */
   // Allocate a hugepage for the CQ and RQ's cidb buffer. They share the same hugepage
-  // cidb is 32-bit, and each queue pair will have both cq_cidb and rq_cidb. Therefor, 
+  // cidb is 32-bit, and each queue pair will have both cq_cidb and rq_cidb. Therefor,
   // we set base address of rq_cidb_addr to cq_cidb_addr + (num_qp<<2)
   uint32_t cidb_buffer_size = (1 << HUGE_PAGE_SHIFT);
   cidb_buffer = allocate_rdma_buffer(rn_dev, (uint64_t) cidb_buffer_size, "host_mem");
@@ -237,22 +239,22 @@ int main(int argc, char *argv[])
   err_buf = allocate_rdma_buffer(rn_dev, (uint64_t) (num_err_buf*per_err_buf_size), "host_mem");
   resp_err_pkt_buf = allocate_rdma_buffer(rn_dev, (uint64_t) resp_err_pkt_buf_size, "host_mem");
 
-  /* 
-   * 4. Open RDMA engine 
+  /*
+   * 4. Open RDMA engine
    */
   fprintf(stderr, "Info: OPEN RDMA DEVICE\n");
   open_rdma_dev(rdma_dev, src_mac, src_ip, udp_sport, num_data_buf, per_data_buf_size,
                 data_buf->dma_addr, ipkt_err_stat_q_size, ipkterr_buf->dma_addr, num_err_buf,
-                per_err_buf_size, err_buf->dma_addr, resp_err_pkt_buf_size, resp_err_pkt_buf->dma_addr);
+                per_err_buf_size, err_buf->dma_addr, resp_err_pkt_buf_size_conf, resp_err_pkt_buf->dma_addr);
 
-  /* 
+  /*
    * 5. Allocate protection domain for queues and memory regions
    */
   fprintf(stderr, "Info: ALLOCATE PD\n");
   struct rdma_pd_t* rdma_pd = allocate_rdma_pd(rdma_dev, 0 /* pd_num */);
 
   qdepth = 64;
-  qpid   = 2;
+  qpid   = 3;       //Update from 2 to 3
 
   fprintf(stderr, "Info: OPEN DEVICE FILE\n");
   // Open the character device, reconic-mm, for data communication between host and device memory
@@ -265,7 +267,7 @@ int main(int argc, char *argv[])
     return -EINVAL;
   }
 
-  /* 
+  /*
    * 6. Allocate a queue pair
    */
   fprintf(stderr, "Info: ALLOCATE RDMA QP\n");
@@ -274,10 +276,10 @@ int main(int argc, char *argv[])
   //  --   2KB CQ (8 CQs, each has 256B and can accommodate 64 CQEs)
   //  -- 128KB RQ (8 RQs, each has 16KB and can accommodate 64 RQE)
   // All SQ, CQ and RQ resources can be used for a single QP.
-    //struct rdma_qp_t* qp = 
+    //struct rdma_qp_t* qp =
   allocate_rdma_qp(rdma_dev, qpid, dst_qpid, rdma_pd, cq_cidb_addr, rq_cidb_addr, qdepth, qp_location, &dst_mac, dst_ip, P_KEY, R_KEY);
 
-  /* 
+  /*
    * 7. Configure last_rq_psn, so that the RDMA packets can be accepted at the remote side
    */
   fprintf(stderr, "Info: CONFIGURE PSN\n");
@@ -298,7 +300,7 @@ int main(int argc, char *argv[])
     uint64_t buf_phy_addr;
 
     buf_size = payload_size;
-    
+
     uint32_t* recv_tmp = malloc(buf_size);
 
     memset(&server_addr, '\0', sizeof(struct sockaddr_in));
@@ -307,9 +309,8 @@ int main(int argc, char *argv[])
     server_addr.sin_addr.s_addr = inet_addr(dst_ip_str);
 
     fprintf(stderr, "Info: Client is connecting to a remote server\n");
-    connect(sockfd, (struct sockaddr* )&server_addr, sizeof(server_addr));
-
-    fprintf(stderr, "Info: Client is connected to a remote server\n");
+    int cn_rn = connect(sockfd, (struct sockaddr* )&server_addr, sizeof(server_addr));
+    fprintf(stderr, "Info: Client is connected to a remote server, connecting result is %d\n", cn_rn);
 
     rc = read(sockfd, &read_A_offset, sizeof(read_A_offset));
 
@@ -320,6 +321,27 @@ int main(int argc, char *argv[])
       close(sockfd);
       return -1;
     }
+    
+    // rc = 0;
+    // int num_try = 0;
+    // while(1) {
+    //   rc = read(sockfd, &read_A_offset, sizeof(read_A_offset));
+    //   if(rc > 0) {
+    //     fprintf(stderr, "Info: client received remote offset of A = 0x%lx\n", ntohll(read_A_offset));
+    //     break;
+    //   } else {
+    //     fprintf(stderr, "Warning: Can't receive remote offset of A from the remote peer, try num=%d\n",num_try);
+    //     sleep(1);
+    //     num_try++;
+    //   }
+
+    //   if(num_try >= MAX_SOCKET_RETRY) {
+    //     fprintf(stderr, "Error: Can't receive remote offset of A from the remote peer\n");
+    //     close(sockfd);
+    //     return -1;
+    //   }
+    // }
+    // fprintf(stderr, "Info: Client is connected to a remote server\n");
 
     read_A_offset = ntohll(read_A_offset);
 
@@ -370,7 +392,7 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Info: received data: recv[%d]=%d\n", i, recv_tmp[i]);
     }*/
 
-    /* 
+    /*
     * 10. Check received data.
     */
     fprintf(stderr, "Info: CHECK RECEIVED DATA\n");
@@ -389,7 +411,7 @@ int main(int argc, char *argv[])
     }
     fprintf(stderr, "Info: Printing RDMA registers from the client side\n");
     // Dump RDMA registers
-    dump_registers(rdma_dev, 1, qpid);
+    //dump_registers(rdma_dev, 1, qpid);
 
 
   }
@@ -405,8 +427,9 @@ int main(int argc, char *argv[])
     bind(sockfd, (struct sockaddr*) &server_addr, sizeof(struct sockaddr_in));
 
     fprintf(stderr, "Info: Server is listening to a remote peer\n");
-    listen(sockfd, LISTENQ);
-
+    int rn_listen;
+    rn_listen = listen(sockfd, LISTENQ);
+    fprintf(stderr, "Info: Server is accepting a connection from a remote peer, result is %d\n", rn_listen);
     addr_size = sizeof(client_addr);
     accepted_sockfd = accept(sockfd, (struct sockaddr*)&client_addr, &addr_size);
 
@@ -443,11 +466,12 @@ int main(int argc, char *argv[])
     }*/
 
     fprintf(stderr, "Does the client finish its RDMA read operation? If yes, please press any key\n");
-    
-    while(val != '\r' && val != '\n') {
-      val = getchar();
-    }
-    fprintf(stderr, "\n");
+
+    // while(val != '\r' && val != '\n') {
+    //   val = getchar();
+    // }
+    // fprintf(stderr, "\n");
+    sleep(1);
 
     dump_registers(rn_dev->rdma_dev, 0, qpid);
 
@@ -462,7 +486,7 @@ int main(int argc, char *argv[])
     fprintf(stderr, "sockfd shutdown failed\n");
     fprintf(stderr, "Error: %s\n", strerror(errno));
   }
-  close(sockfd);	
+  close(sockfd);
 
 out:
   free(cidb_buffer);
@@ -476,5 +500,4 @@ out:
   destroy_rn_dev(rn_dev);
   return 0;
 }
-
 
