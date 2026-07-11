@@ -1,0 +1,33 @@
+name: RecoNIC CI
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Build RecoNIC Library
+      run: |
+        cd lib
+        make clean
+        make
+
+    - name: Build RDMA Test Examples
+      run: |
+        cd examples/rdma_test
+        make clean
+        make
+
+    - name: Build Network Systolic MM
+      run: |
+        cd examples/network_systolic_mm
+        make clean
+        make
