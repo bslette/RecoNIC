@@ -357,8 +357,19 @@ struct rdma_buff_t* allocate_hugepages_buffer(uint32_t num_hugepages) {
   }
 
   rdma_buffer->dma_addr = get_buffer_paddr(rdma_buffer->buffer);
+  rdma_buffer->buf_size = num_hugepages * (1 << HUGE_PAGE_SHIFT);
 
   return rdma_buffer;
+}
+
+void free_hugepages_buffer(struct rdma_buff_t* rdma_buffer) {
+  if(rdma_buffer != NULL) {
+    if(rdma_buffer->buffer != NULL && rdma_buffer->buffer != MAP_FAILED) {
+      munlock(rdma_buffer->buffer, rdma_buffer->buf_size);
+      munmap(rdma_buffer->buffer, rdma_buffer->buf_size);
+    }
+    free(rdma_buffer);
+  }
 }
 
 void config_last_rq_psn(struct rdma_dev_t* rdma_dev, uint32_t qpid, uint32_t last_rq_psn)
@@ -1105,8 +1116,12 @@ int destroy_rdma_qp(struct rdma_qp_t* qp) {
     free(qp->rq); 
     free(qp->cq);
     
-    destroy_rdma_pd_entry(qp->pd_entry);
-    qp = NULL;
+    // Clear queue pair pointer in the RDMA device
+    if(qp->rdma_dev != NULL && qp->rdma_dev->qps_ptr != NULL) {
+      qp->rdma_dev->qps_ptr[qp->qpid] = NULL;
+    }
+    // Free the queue pair structure itself
+    free(qp);
   }
 
   return 0;
@@ -1117,16 +1132,24 @@ int destroy_rdma_dev(struct rdma_dev_t* rdma_dev) {
   uint32_t rnic_enable;
   uint32_t rnic_config;
   if(rdma_dev != NULL) {
-    free(rdma_dev->glb_csr);
-    for(i=0; i<rdma_dev->num_qp; i++) {
-      destroy_rdma_qp(rdma_dev->qps_ptr[i]);
+    if(rdma_dev->glb_csr != NULL) {
+      free(rdma_dev->glb_csr);
+    }
+    if(rdma_dev->qps_ptr != NULL) {
+      for(i=0; i<rdma_dev->num_qp; i++) {
+        if(rdma_dev->qps_ptr[i] != NULL) {
+          destroy_rdma_qp(rdma_dev->qps_ptr[i]);
+          rdma_dev->qps_ptr[i] = NULL;
+        }
+      }
+      free(rdma_dev->qps_ptr);
     }
 
     // Disable RNIC hardware
     rnic_enable = 0;
     rnic_config = rnic_enable & 0xffffffff;
     write32_data(rdma_dev->axil_ctl, RN_RDMA_GCSR_XRNICCONF, rnic_config);
-    rdma_dev = NULL;
+    free(rdma_dev);
   }
 
   return 0;
@@ -1134,9 +1157,24 @@ int destroy_rdma_dev(struct rdma_dev_t* rdma_dev) {
 
 int destroy_rn_dev(struct rn_dev_t* rn_dev) {
   if(rn_dev != NULL) {
-    free(rn_dev->base_buf);
-    destroy_rdma_dev((struct rdma_dev_t* ) rn_dev->rdma_dev);
-    rn_dev = NULL;
+    if(rn_dev->base_buf != NULL) {
+      if(rn_dev->base_buf->buffer != NULL && rn_dev->base_buf->buffer != MAP_FAILED) {
+        munlock(rn_dev->base_buf->buffer, rn_dev->base_buf->buf_size);
+        munmap(rn_dev->base_buf->buffer, rn_dev->base_buf->buf_size);
+      }
+      free(rn_dev->base_buf);
+    }
+    if(rn_dev->axil_ctl != NULL && rn_dev->axil_ctl != MAP_FAILED) {
+      munmap(rn_dev->axil_ctl, rn_dev->axil_map_size);
+    }
+    if(rn_dev->winSize != NULL) {
+      free(rn_dev->winSize);
+    }
+    if(rn_dev->rdma_dev != NULL) {
+      destroy_rdma_dev((struct rdma_dev_t* ) rn_dev->rdma_dev);
+      rn_dev->rdma_dev = NULL;
+    }
+    free(rn_dev);
   }
 
   return 0;

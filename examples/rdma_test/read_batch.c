@@ -82,8 +82,9 @@ int main(int argc, char *argv[])
   char  val = 0;
 
   struct rdma_buff_t* cidb_buffer;
-  struct rdma_buff_t* tmp_buffer;
-  struct rdma_buff_t* device_buffer;
+  struct rdma_buff_t* tmp_buffer = NULL;
+  struct rdma_buff_t* device_buffer = NULL;
+  struct rdma_pd_t* rdma_pd = NULL;
 
   uint64_t cq_cidb_addr;
   uint64_t rq_cidb_addr;
@@ -256,7 +257,7 @@ int main(int argc, char *argv[])
    * 5. Allocate protection domain for queues and memory regions
    */
   fprintf(stderr, "Info: ALLOCATE PD\n");
-  struct rdma_pd_t* rdma_pd = allocate_rdma_pd(rdma_dev, 0 /* pd_num */);
+  rdma_pd = allocate_rdma_pd(rdma_dev, 0 /* pd_num */);
 
   qdepth = 64;
   qpid   = 2;
@@ -467,6 +468,19 @@ int main(int argc, char *argv[])
   close(sockfd);	
 
 out:
+  if (client) {
+    if (device_buffer != NULL) {
+      free(device_buffer);
+    }
+  }
+  if (server) {
+    if (tmp_buffer != NULL) {
+      free(tmp_buffer);
+    }
+  }
+  if (rdma_pd != NULL) {
+    destroy_rdma_pd_entry(rdma_pd);
+  }
   free(cidb_buffer);
   free(data_buf);
   free(ipkterr_buf);
