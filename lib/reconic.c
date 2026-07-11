@@ -330,6 +330,7 @@ struct rn_dev_t* create_rn_dev(char* pcie_resource, int* pcie_resource_fd, uint3
   }
 
   rn_dev->base_buf->dma_addr = get_buffer_paddr(rn_dev->base_buf->buffer);
+  rn_dev->base_buf->buf_size = num_hugepages_request * (1 << HUGE_PAGE_SHIFT);
   fprintf(stderr, "Info: pre-allocated hugepage buffer vir addr = %p, physical addr = 0x%lx\n", rn_dev->base_buf->buffer, rn_dev->base_buf->dma_addr);
 
   phy_addr_msb = (uint32_t) ((rn_dev->base_buf->dma_addr & 0xffffffff00000000) >> 32);

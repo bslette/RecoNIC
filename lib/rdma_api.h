@@ -209,6 +209,12 @@ void rdma_register_memory_region(struct rdma_dev_t* rdma_dev, struct rdma_pd_t* 
  */
 struct rdma_buff_t* allocate_hugepages_buffer(uint32_t num_hugepages);
 
+/** @brief Free a hugepage buffer allocated.
+ *  @param rdma_buffer a pointer to the RDMA buffer to be freed.
+ *  @return void.
+ */
+void free_hugepages_buffer(struct rdma_buff_t* rdma_buffer);
+
 /** @brief Configure last RQ packet sequence number.
  *  @param rdma_dev A pointer to the RDMA device.
  *  @param qpid the corresponding QP ID.

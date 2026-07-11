@@ -119,12 +119,13 @@ int main(int argc, char *argv[])
   char  val = 0;
 
   struct rdma_buff_t* cidb_buffer;
-  struct rdma_buff_t* tmp_buffer;
+  struct rdma_buff_t* tmp_buffer = NULL;
   struct rdma_buff_t* mr_bufferA = malloc(sizeof(struct rdma_buff_t));
   struct rdma_buff_t* mr_bufferB = malloc(sizeof(struct rdma_buff_t));
-  struct rdma_buff_t* device_bufferA;
-  struct rdma_buff_t* device_bufferB;
-  struct rdma_buff_t* device_bufferC;
+  struct rdma_buff_t* device_bufferA = NULL;
+  struct rdma_buff_t* device_bufferB = NULL;
+  struct rdma_buff_t* device_bufferC = NULL;
+  struct rdma_pd_t* rdma_pd = NULL;
   uint64_t cq_cidb_addr;
   uint64_t rq_cidb_addr;
 
@@ -299,7 +300,7 @@ int main(int argc, char *argv[])
    * 5. Allocate protection domain for queues and memory regions
    */
   fprintf(stderr, "Info: ALLOCATE PD\n");
-  struct rdma_pd_t* rdma_pd = allocate_rdma_pd(rdma_dev, 0 /* pd_num */);
+  rdma_pd = allocate_rdma_pd(rdma_dev, 0 /* pd_num */);
 
   qdepth = 64;
   qpid   = 2;
@@ -567,6 +568,31 @@ int main(int argc, char *argv[])
   close(sockfd);
 
 out:
+  if (mr_bufferA != NULL) {
+    free(mr_bufferA);
+  }
+  if (mr_bufferB != NULL) {
+    free(mr_bufferB);
+  }
+  if (client) {
+    if (device_bufferA != NULL) {
+      free(device_bufferA);
+    }
+    if (device_bufferB != NULL) {
+      free(device_bufferB);
+    }
+    if (device_bufferC != NULL) {
+      free(device_bufferC);
+    }
+  }
+  if (server) {
+    if (tmp_buffer != NULL) {
+      free(tmp_buffer);
+    }
+  }
+  if (rdma_pd != NULL) {
+    destroy_rdma_pd_entry(rdma_pd);
+  }
   free(cidb_buffer);
   free(data_buf);
   free(ipkterr_buf);
